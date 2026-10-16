@@ -17,6 +17,21 @@ public final class ReasonCodes {
     /** Concurrency fell back to a conservative value because the metrics could not be read. */
     public static final String METRICS_UNAVAILABLE = "METRICS_UNAVAILABLE";
 
+    /** The concurrency quota of this worker (or of the task type) was used up, so the task waited. */
+    public static final String CAPACITY_LIMIT = "CAPACITY_LIMIT";
+
+    /** The batch or priority order of the dispatch round left the task waiting although quota was free. */
+    public static final String PRIORITY_WAIT = "PRIORITY_WAIT";
+
+    /** A failed attempt was rescheduled with a backoff delay and is not ready to run yet (PRD 5.4). */
+    public static final String RETRY_BACKOFF = "RETRY_BACKOFF";
+
+    /** The lease of a running attempt expired and the task was taken back by recovery. */
+    public static final String LEASE_EXPIRED = "LEASE_EXPIRED";
+
+    /** A retryable failure could not be retried because {@code max_attempts} was reached. */
+    public static final String MAX_RETRIES_EXCEEDED = "MAX_RETRIES_EXCEEDED";
+
     private ReasonCodes() {
     }
 }

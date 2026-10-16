@@ -1,5 +1,7 @@
 package com.yuki.reactor.core.service;
 
+import com.yuki.reactor.core.decision.SchedulerDecisionRecorder;
+import com.yuki.reactor.core.domain.DecisionType;
 import com.yuki.reactor.core.domain.ErrorCodes;
 import com.yuki.reactor.core.domain.ExecutionResult;
 import com.yuki.reactor.core.domain.Task;
@@ -39,11 +41,14 @@ public class TaskOperations {
     private final TaskMapper taskMapper;
     private final TaskExecutionMapper executionMapper;
     private final RetryPolicy retryPolicy;
+    private final SchedulerDecisionRecorder decisionRecorder;
 
-    public TaskOperations(TaskMapper taskMapper, TaskExecutionMapper executionMapper, RetryPolicy retryPolicy) {
+    public TaskOperations(TaskMapper taskMapper, TaskExecutionMapper executionMapper, RetryPolicy retryPolicy,
+                          SchedulerDecisionRecorder decisionRecorder) {
         this.taskMapper = taskMapper;
         this.executionMapper = executionMapper;
         this.retryPolicy = retryPolicy;
+        this.decisionRecorder = decisionRecorder;
     }
 
     /** Candidate tasks a worker may attempt to claim, best first. */
@@ -114,10 +119,32 @@ public class TaskOperations {
      * delay; non-retryable failures and exhausted attempt budgets end in {@code FAILED} with the
      * {@code MAX_RETRIES_EXCEEDED} code.
      *
+     * <p>Without a worker context this is the same decision without an attributed decision record.
+     *
      * @return {@code true} when the task state was written, {@code false} when the result was rejected
      */
     @Transactional
     public boolean fail(long taskId, long executionId, long fencingToken, TaskFailure failure, LocalDateTime now) {
+        return fail(taskId, executionId, fencingToken, failure, null, null, now);
+    }
+
+    /**
+     * Reports a failed attempt, decides what happens next and records the decision (PRD 5.6).
+     *
+     * <p>The retry decision itself is written to {@code scheduler_decision} while the task state
+     * changes, so a reader can explain a delay without guessing it from the task row: a rescheduled
+     * attempt becomes {@link DecisionType#RETRY_SCHEDULED} with {@code RETRY_BACKOFF}, a used up
+     * retry budget becomes {@link DecisionType#RETRY_EXHAUSTED} with {@code MAX_RETRIES_EXCEEDED}.
+     * A failure that is not retryable in the first place is not a scheduling decision, so it only
+     * leaves the execution record and {@code task.last_error}.
+     *
+     * @param workerId         worker that reported the attempt, may be {@code null}
+     * @param concurrencyLimit concurrency the worker was dispatching against, may be {@code null}
+     * @return {@code true} when the task state was written, {@code false} when the result was rejected
+     */
+    @Transactional
+    public boolean fail(long taskId, long executionId, long fencingToken, TaskFailure failure, String workerId,
+                        Integer concurrencyLimit, LocalDateTime now) {
         Task owned = taskMapper.findOwned(taskId, fencingToken);
         if (owned == null) {
             rejectStale(taskId, executionId, fencingToken, now);
@@ -136,6 +163,8 @@ public class TaskOperations {
             if (taskMapper.markRetryWait(taskId, fencingToken, nextRunAt, error, now) == 1) {
                 executionMapper.finish(executionId, ExecutionResult.FAILED, code, failure.category(), message, now);
                 log.debug("task {} failed as {} and is retried at {}", taskId, failure.category(), nextRunAt);
+                decisionRecorder.recordRetryScheduled(taskId, executionId, workerId, concurrencyLimit, now,
+                        nextRunAt, attempts, maxAttempts, failure.category());
                 return true;
             }
         } else {
@@ -149,6 +178,10 @@ public class TaskOperations {
             if (taskMapper.markFailed(taskId, fencingToken, error, now) == 1) {
                 executionMapper.finish(executionId, ExecutionResult.FAILED, code, failure.category(), message, now);
                 log.debug("task {} failed terminally as {} ({})", taskId, failure.category(), code);
+                if (exhausted && failure.retryable()) {
+                    decisionRecorder.recordRetriesExhausted(taskId, executionId, workerId, concurrencyLimit, now,
+                            attempts, maxAttempts, failure.category());
+                }
                 return true;
             }
         }

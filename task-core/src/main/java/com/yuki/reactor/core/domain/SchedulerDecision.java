@@ -23,15 +23,26 @@ public class SchedulerDecision {
 
     private Long taskId;
 
+    /** Attempt the decision is about; {@code null} for process level decisions. */
+    private Long executionId;
+
     private DecisionType decisionType;
 
     private String reasonCode;
 
     private String workerId;
 
+    /** Concurrency before an adjustment; only written by {@link DecisionType#CONCURRENCY_ADJUSTMENT}. */
     private Integer concurrencyBefore;
 
+    /** Concurrency after an adjustment; only written by {@link DecisionType#CONCURRENCY_ADJUSTMENT}. */
     private Integer concurrencyAfter;
+
+    /** Concurrency in force when the decision was taken, for decisions that do not change it. */
+    private Integer concurrencyLimit;
+
+    /** Retry time the decision chose, written by {@link ReasonCodes#RETRY_BACKOFF}. */
+    private LocalDateTime nextRunAt;
 
     private Integer runningTasks;
 
