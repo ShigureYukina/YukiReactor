@@ -25,6 +25,7 @@
         <module>task-recovery</module>
         <module>fault-lab</module>
         <module>adaptive-controller</module>
+        <module>observability</module>
         <module>app</module>
     </modules>
 
@@ -68,6 +69,11 @@
             <dependency>
                 <groupId>com.yuki</groupId>
                 <artifactId>reactor-adaptive-controller</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.yuki</groupId>
+                <artifactId>reactor-observability</artifactId>
                 <version>${project.version}</version>
             </dependency>
         </dependencies>

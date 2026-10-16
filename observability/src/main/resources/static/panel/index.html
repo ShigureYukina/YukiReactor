@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Reactor 监控面板</title>
+    <style>
+        :root {
+            --ink: #14202b;
+            --muted: #5d6b78;
+            --line: #dfe5ea;
+            --bg: #f6f8fa;
+            --card: #ffffff;
+            --accent: #1f6feb;
+            --warn: #b54708;
+            --bad: #b42318;
+            --good: #0a7b46;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            padding: 24px 32px 48px;
+            background: var(--bg);
+            color: var(--ink);
+            font: 14px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+        }
+
+        header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+        h1 { font-size: 20px; margin: 0; letter-spacing: .2px; }
+        h2 { font-size: 15px; margin: 0 0 12px; }
+        .hint { color: var(--muted); font-size: 12px; }
+        .spacer { flex: 1; }
+
+        section {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 18px 20px;
+            margin-top: 20px;
+        }
+
+        .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 18px; }
+        .metric .label { color: var(--muted); font-size: 12px; }
+        .metric .value { font-size: 22px; font-variant-numeric: tabular-nums; }
+        .metric .value.bad { color: var(--bad); }
+        .metric .value.good { color: var(--good); }
+
+        table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+        th, td { text-align: left; padding: 7px 10px 7px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+        th { color: var(--muted); font-weight: 600; font-size: 12px; }
+        tr:last-child td { border-bottom: none; }
+        td.num { text-align: right; }
+        code { font: 12px/1.4 ui-monospace, Consolas, monospace; }
+
+        button {
+            font: inherit;
+            padding: 4px 10px;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            background: var(--card);
+            color: var(--ink);
+            cursor: pointer;
+        }
+        button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+        .empty { color: var(--muted); }
+        .err { color: var(--bad); }
+    </style>
+</head>
+<body>
+<header>
+    <h1>Reactor 监控面板</h1>
+    <span class="hint">数据全部来自 MySQL 中的任务、执行与决策记录</span>
+    <span class="spacer"></span>
+    <span class="hint" id="refreshed">加载中…</span>
+    <button id="refresh">刷新</button>
+</header>
+
+<section>
+    <h2>概览（窗口 <span id="window"></span>）</h2>
+    <div class="hint" style="margin-bottom:12px">
+        统计口径：完成数 = 成功 + 终态失败；失败率 = 终态失败 / 完成数；吞吐量 = 窗口内成功数 / 窗口秒数。
+    </div>
+    <div class="metrics" id="metrics"></div>
+</section>
+
+<section>
+    <h2>最近决策</h2>
+    <div class="hint" style="margin-bottom:12px">每条都来自真实调度代码路径写入的决策行；原因码不会被前端推测。</div>
+    <table>
+        <thead>
+        <tr>
+            <th>时间</th><th>类型</th><th>原因码</th><th class="num">任务</th><th class="num">执行</th>
+            <th class="num">并发</th><th class="num">在飞</th><th class="num">积压</th><th>说明</th>
+        </tr>
+        </thead>
+        <tbody id="decisions"></tbody>
+    </table>
+</section>
+
+<section>
+    <h2>最近任务</h2>
+    <table>
+        <thead>
+        <tr>
+            <th class="num">ID</th><th>类型</th><th>状态</th><th class="num">尝试</th>
+            <th class="num">优先级</th><th>下次可执行</th><th>最后错误</th>
+        </tr>
+        </thead>
+        <tbody id="tasks"></tbody>
+    </table>
+</section>
+
+<section>
+    <h2>实验对照</h2>
+    <div class="hint" style="margin-bottom:12px">
+        固定并发与自适应并发在同一实验下的每一轮都保留；点实验名查看全部轮次。
+    </div>
+    <div id="experiments" class="empty">加载中…</div>
+</section>
+
+<script>
+    const WINDOW_MINUTES = 15;
+
+    function esc(value) {
+        return String(value).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+    }
+
+    function num(value, digits = 1) {
+        return value === null || value === undefined ? '—' : Number(value).toFixed(digits);
+    }
+
+    function clock(value) {
+        return value === null || value === undefined ? '—' : String(value).replace('T', ' ').slice(0, 23);
+    }
+
+    async function get(path) {
+        const response = await fetch(path, {headers: {Accept: 'application/json'}});
+        if (!response.ok) {
+            throw new Error(path + ' -> HTTP ' + response.status);
+        }
+        return response.json();
+    }
+
+    function metric(label, value, tone) {
+        const cls = tone ? ' ' + tone : '';
+        return '<div class="metric"><div class="label">' + esc(label) + '</div>'
+            + '<div class="value' + cls + '">' + value + '</div></div>';
+    }
+
+    function renderMetrics(summary) {
+        document.getElementById('window').textContent =
+            clock(summary.from) + ' → ' + clock(summary.to) + ' (UTC)';
+        const failure = num(summary.failureRate * 100, 1) + '%';
+        document.getElementById('metrics').innerHTML =
+            metric('提交任务', summary.submittedTasks)
+            + metric('成功完成', summary.succeededTasks, 'good')
+            + metric('终态失败', summary.failedTasks, summary.failedTasks > 0 ? 'bad' : '')
+            + metric('失败率', failure, summary.failureRate > 0.3 ? 'bad' : '')
+            + metric('吞吐量 / 秒', num(summary.throughputPerSecond, 2))
+            + metric('平均排队延迟 ms', num(summary.avgQueueDelayMs))
+            + metric('平均执行延迟 ms', num(summary.avgExecutionDelayMs))
+            + metric('平均尝试次数', num(summary.avgAttemptsPerTask, 2))
+            + metric('执行记录数', summary.executionAttempts)
+            + metric('当前在飞', summary.runningNow)
+            + metric('当前积压', summary.backlogNow);
+    }
+
+    function renderDecisions(page) {
+        const body = document.getElementById('decisions');
+        if (!page.items.length) {
+            body.innerHTML = '<tr><td colspan="9" class="empty">窗口内没有决策记录</td></tr>';
+            return;
+        }
+        body.innerHTML = page.items.map(d => '<tr>'
+            + '<td>' + clock(d.createdAt) + '</td>'
+            + '<td>' + esc(d.decisionType) + '</td>'
+            + '<td><code>' + esc(d.reasonCode) + '</code></td>'
+            + '<td class="num">' + (d.taskId ?? '—') + '</td>'
+            + '<td class="num">' + (d.executionId ?? '—') + '</td>'
+            + '<td class="num">' + (d.concurrencyLimit ?? '—') + '</td>'
+            + '<td class="num">' + (d.runningTasks ?? '—') + '</td>'
+            + '<td class="num">' + (d.backlog ?? '—') + '</td>'
+            + '<td>' + esc(d.observedDetails ?? '') + '</td>'
+            + '</tr>').join('');
+    }
+
+    function renderTasks(page) {
+        const body = document.getElementById('tasks');
+        if (!page.items.length) {
+            body.innerHTML = '<tr><td colspan="7" class="empty">还没有任务</td></tr>';
+            return;
+        }
+        body.innerHTML = page.items.map(t => '<tr>'
+            + '<td class="num">' + t.id + '</td>'
+            + '<td>' + esc(t.taskType) + '</td>'
+            + '<td>' + esc(t.status) + '</td>'
+            + '<td class="num">' + t.attemptCount + ' / ' + t.maxAttempts + '</td>'
+            + '<td class="num">' + t.priority + '</td>'
+            + '<td>' + clock(t.nextRunAt) + '</td>'
+            + '<td>' + esc(t.lastError ?? '') + '</td>'
+            + '</tr>').join('');
+    }
+
+    function renderExperiments(page) {
+        const host = document.getElementById('experiments');
+        if (!page.items.length) {
+            host.innerHTML = '<div class="empty">还没有实验记录</div>';
+            return;
+        }
+        const byName = new Map();
+        for (const run of page.items) {
+            if (!byName.has(run.experimentName)) {
+                byName.set(run.experimentName, []);
+            }
+            byName.get(run.experimentName).push(run);
+        }
+        host.innerHTML = [...byName.entries()].map(([name, rounds]) => {
+            const rows = rounds.map(r => '<tr>'
+                + '<td>' + esc(r.strategy) + '</td>'
+                + '<td class="num">' + r.roundIndex + '</td>'
+                + '<td class="num">' + r.taskCount + '</td>'
+                + '<td>' + clock(r.startedAt) + '</td>'
+                + '<td>' + clock(r.finishedAt) + '</td>'
+                + '<td>' + esc(r.notes ?? '') + '</td>'
+                + '</tr>').join('');
+            return '<div style="margin-bottom:16px">'
+                + '<div style="margin-bottom:6px"><strong>' + esc(name) + '</strong> '
+                + '<span class="hint">共 ' + rounds.length + ' 轮</span></div>'
+                + '<table><thead><tr><th>策略</th><th class="num">轮次</th><th class="num">任务数</th>'
+                + '<th>开始</th><th>结束</th><th>备注</th></tr></thead><tbody>' + rows + '</tbody></table>'
+                + '</div>';
+        }).join('');
+    }
+
+    async function refresh() {
+        const to = new Date();
+        const from = new Date(to.getTime() - WINDOW_MINUTES * 60 * 1000);
+        const iso = d => d.toISOString().slice(0, 23);
+        try {
+            const [metrics, decisions, tasks, experiments] = await Promise.all([
+                get('/api/v1/metrics/summary?from=' + iso(from) + '&to=' + iso(to)),
+                get('/api/v1/decisions?from=' + iso(from) + '&to=' + iso(to) + '&size=20'),
+                get('/api/v1/tasks?size=20'),
+                get('/api/v1/experiments?size=50')
+            ]);
+            renderMetrics(metrics);
+            renderDecisions(decisions);
+            renderTasks(tasks);
+            renderExperiments(experiments);
+            document.getElementById('refreshed').textContent = '刷新于 ' + clock(iso(to)) + ' UTC';
+        } catch (e) {
+            document.getElementById('refreshed').innerHTML = '<span class="err">' + esc(e.message) + '</span>';
+        }
+    }
+
+    document.getElementById('refresh').addEventListener('click', refresh);
+    refresh();
+    setInterval(refresh, 5000);
+</script>
+</body>
+</html>
