@@ -6,8 +6,8 @@ Reactor 关注的不是"任务能不能跑起来"，而是任务在异常条件�
 
 - 需求文档（唯一权威来源）：[`docs/PRD.md`](docs/PRD.md)
 - 开发准则与硬约束：[`AGENTS.md`](AGENTS.md)
-- 当前进度：**第二阶段（并发控制与故障恢复）已完成**
-- 第二阶段故障恢复实验报告：[`docs/reports/phase-2-recovery.md`](docs/reports/phase-2-recovery.md)
+- 当前进度：**第四阶段（调度解释与故障实验）已完成**
+- 实验报告：[第二阶段故障恢复](docs/reports/phase-2-recovery.md) · [第三阶段自适应并发控制](docs/reports/phase-3-adaptive-control.md) · [第四阶段固定并发与自适应并发对照](docs/reports/phase-4-comparison-experiment.md)
 
 > 本文件在每阶段结束时更新。已实现与未实现的能力在下表如实列出。
 
@@ -31,7 +31,8 @@ Reactor 关注的不是"任务能不能跑起来"，而是任务在异常条件�
 | 自适应并发控制（AIMD，默认关闭） | ✅ 第三阶段 |
 | 模拟下游与运行时故障注入（延迟、错误率、失败类型、限流） | ✅ 第三阶段 |
 | 并发度调整的决策记录（`scheduler_decision`，只写） | ✅ 第三阶段 |
-| 决策查询接口、任务时间线、监控面板 | ❌ 第四阶段 |
+| 任务级调度决策记录（延迟、重试退避、重试耗尽、租约回收的原因码） | ✅ 第四阶段 |
+| 任务时间线、决策查询、指标聚合、实验记录与静态面板 | ✅ 第四阶段 |
 | 管理接口认证与鉴权 | ❌ 第五阶段 |
 
 未实现的能力不会在代码里留空壳或未使用的抽象；对应模块在各自阶段才创建。
@@ -45,10 +46,11 @@ task-worker   领取-执行-续约-上报的执行引擎（SmartLifecycle），�
 task-recovery 过期租约回收与孤儿执行记录清理（定时扫描器）
 fault-lab     可运行时配置的模拟下游与 `downstream` 任务类型（故障注入）
 adaptive-controller AIMD 并发度控制器与决策记录写入（读信号 → 调整并发度）
+observability 任务时间线、决策查询、指标聚合、实验记录（含 Flyway V5 迁移）与静态面板
 app           Spring Boot 装配、配置、演示任务类型
 ```
 
-依赖方向：`task-api`、`task-worker`、`task-recovery`、`fault-lab`、`adaptive-controller` 依赖 `task-core`，业务模块之间互不依赖；`app` 只做装配。worker 与自适应控制器不直接依赖：控制器写、worker 读同一个共享并发度（`ConcurrencyLimit`），观测信号经 `RuntimeSignals` 传递。**MySQL 是唯一任务状态来源**，未引入 Redis / 消息队列。
+依赖方向：`task-api`、`task-worker`、`task-recovery`、`fault-lab`、`adaptive-controller`、`observability` 依赖 `task-core`，业务模块之间互不依赖；`app` 只做装配。worker 与自适应控制器不直接依赖：控制器写、worker 读同一个共享并发度（`ConcurrencyLimit`），观测信号经 `RuntimeSignals` 传递。决策记录的**写入**由 `task-core` 的 `SchedulerDecisionRecorder` 与 `adaptive-controller` 的 `ConcurrencyDecisionRecorder` 在真实决策代码路径完成，`observability` 只负责**读取**：决策分页查询、任务时间线、指标聚合与 `experiment_run` 记录读取所需的 SQL 放在 `task-core`，领域对象与服务放在 `observability`。**MySQL 是唯一任务状态来源**，未引入 Redis / 消息队列。
 
 ## 快速开始
 
@@ -90,6 +92,14 @@ curl.exe -s http://localhost:8080/api/v1/tasks/1/executions
 | GET | `/api/v1/tasks/{id}/executions` | 执行历史（每次尝试的开始/结束时间、执行器、结果、错误码与错误分类、所属 fencing token） |
 | POST | `/api/v1/tasks/{id}/cancel` | 取消尚未开始的任务，body：`{"operator": "...", "reason": "..."}` |
 | POST | `/api/v1/tasks/{id}/replay` | 管理员重放失败任务，body 同上 |
+| GET | `/api/v1/tasks/{id}/timeline` | 任务时间线：把任务状态变更、每次执行尝试与调度决策按时间合并成一条可读序列 |
+| GET | `/api/v1/decisions` | 决策分页查询：`taskId`、`type`、`reasonCode`、`from`/`to`（ISO-8601，按决策时间）、`page`、`size` |
+| GET | `/api/v1/metrics/summary` | 指标聚合：`from`/`to` 为半开区间 `[from, to)`，缺省为最近 5 分钟；返回完成数、失败率、吞吐、队列/执行延迟均值与查询时刻的积压/在飞 |
+| POST | `/api/v1/experiments` | 记录一轮对照实验（配置、随机种子、起止时间、指标快照、结果汇总），新建返回 `201`；同一实验名 + 策略 + 轮次重复返回 `409` |
+| GET | `/api/v1/experiments` | 实验轮次分页查询：`name`、`strategy`、`page`、`size` |
+| GET | `/api/v1/experiments/{name}` | 某个实验名的全部轮次（按策略与轮次排序） |
+
+静态面板在 `http://localhost:8080/panel/index.html`：无构建步骤的单个 HTML，直接调用上面的接口展示任务时间线、决策查询与指标摘要。
 
 提交请求字段：
 
@@ -109,7 +119,7 @@ curl.exe -s http://localhost:8080/api/v1/tasks/1/executions
 - `idempotencyScope` + `idempotencyKey`：**同一调用方、同一幂等键只能创建一个逻辑任务**，由数据库唯一键 `uk_task_idempotency` 保证；重复提交返回已有任务标识。不同业务范围中的相同字符串不视为同一任务。不传幂等键时允许重复创建。
 - `payload` 只能是 JSON 对象，且**仅被当作数据**：不会被反射成类名、SQL 或脚本执行。
 
-错误码：`TASK_NOT_FOUND`(404)、`UNKNOWN_TASK_TYPE`(400)、`INVALID_REQUEST`(400)、`ILLEGAL_TASK_TRANSITION`(409)、`INVALID_TASK_STATE`(409)、`IDEMPOTENCY_CONFLICT`(409)、`INTERNAL_ERROR`(500)。
+错误码：`TASK_NOT_FOUND`(404)、`UNKNOWN_TASK_TYPE`(400)、`INVALID_REQUEST`(400)、`ILLEGAL_TASK_TRANSITION`(409)、`INVALID_TASK_STATE`(409)、`IDEMPOTENCY_CONFLICT`(409)、`DUPLICATE_EXPERIMENT_ROUND`(409)、`INTERNAL_ERROR`(500)。
 
 ## 任务状态机
 
@@ -244,9 +254,9 @@ $env:JAVA_HOME="$env:USERPROFILE\.jdks\jdk-21.0.12.1+1"
 .\mvnw.cmd -B verify
 ```
 
-- 单元测试（`task-core`、`adaptive-controller`，不需要 Docker）：状态机全部合法/非法转换、任务类型注册表、退避计算（含抖动边界与上限）、重试派发限速器、失败分类；共享并发度的钳制语义、观测信号滚动窗口的聚合与淘汰；AIMD 控制律（递增步长与上限钳制、连续越界才下调、单次降幅上限、下界钳制、冷却、上调前的健康观察窗口、指标缺失与计数不可读时回退保守并发度、参数校验）。
-- 集成测试（`app`，**Testcontainers + MySQL 8，不使用 H2**）：执行成功/失败流程、16 线程并发幂等提交、多引擎竞争的"恰好领取一次"、过期 fencing token 被拒、取消与重放、REST 契约、心跳续约阻止误回收、过期租约回收后由其它实例完成、孤儿执行记录清理、退避窗口内不派发、下游 `retryAfter` 指示优先、不可重试错误立即失败、尝试次数用尽后停止重试、超时中断、按类型并发上限、重试派发限速、运行中由外部改变并发度后派发被限制而不重启引擎、过载下调与恢复上调各写一条带前后值的决策记录、定时采样循环能自行完成调整、模拟下游的失败映射与 `retryAfter` 传递、控制接口的 `operator` 审计，以及「副作用已产生但成功状态未写入」故障窗口的专项验证。
-- 集成测试需要 Docker 可用。当前规模：**task-core 45 个单元测试 + adaptive-controller 11 个单元测试 + app 57 个集成测试**。
+- 单元测试（`task-core`、`observability`、`adaptive-controller`，不需要 Docker）：状态机全部合法/非法转换、任务类型注册表、退避计算（含抖动边界与上限）、重试派发限速器、失败分类；共享并发度的钳制语义、观测信号滚动窗口的聚合与淘汰；决策分页与按原因码过滤、任务时间线的事件顺序与类型、指标窗口口径（半开区间、失败率与吞吐分母）、实验记录的去重与按名称汇总；AIMD 控制律（递增步长与上限钳制、连续越界才下调、单次降幅上限、下界钳制、冷却、上调前的健康观察窗口、指标缺失与计数不可读时回退保守并发度、参数校验）。
+- 集成测试（`app`，**Testcontainers + MySQL 8，不使用 H2**）：执行成功/失败流程、16 线程并发幂等提交、多引擎竞争的"恰好领取一次"、过期 fencing token 被拒、取消与重放、REST 契约、心跳续约阻止误回收、过期租约回收后由其它实例完成、孤儿执行记录清理、退避窗口内不派发、下游 `retryAfter` 指示优先、不可重试错误立即失败、尝试次数用尽后停止重试、超时中断、按类型并发上限、重试派发限速、运行中由外部改变并发度后派发被限制而不重启引擎、过载下调与恢复上调各写一条带前后值的决策记录、定时采样循环能自行完成调整、模拟下游的失败映射与 `retryAfter` 传递、控制接口的 `operator` 审计、任务时间线/决策查询/指标聚合/实验记录的 HTTP 与服务层契约（含重复轮次 409 与静态面板资源），以及「副作用已产生但成功状态未写入」故障窗口的专项验证。
+- 集成测试需要 Docker 可用。当前规模：**152 个测试** —— `task-core` 50 + `observability` 20 + `adaptive-controller` 11（单元测试）+ `app` 71（Testcontainers 集成测试），`.\mvnw.cmd -B verify` → `BUILD SUCCESS`。
 
 ## 故障实验
 
@@ -270,6 +280,17 @@ pwsh -NoProfile -File scripts/phase-3-adaptive-experiment.ps1 -SkipBuild   # 复
 
 脚本启用自适应控制（初始并发 4、上限 8、冷却与恢复观察各 3 s）并跑四段：健康下游下把并发度升到上限 → 通过 `PUT /api/v1/fault-lab/downstream` 注入 1500 ms 延迟与 100% 失败，观察并发度降到 1 → 恢复下游并提交 100 个任务，观察并发度重新升到上限 → 关闭自适应、固定并发 4 重跑同一段过载作为对照。全程记录并发度时间线、`scheduler_decision` 决策行（原因码与调整前后值）与固定并发对照的峰值在飞任务数，写入 `docs/reports/phase-3/<UTC 时间戳>/raw-result.json`，实例日志与构建日志同目录保存。实测结果与局限见 [`docs/reports/phase-3-adaptive-control.md`](docs/reports/phase-3-adaptive-control.md)。
 
+本机可复现的固定并发与自适应并发对照实验（两种策略各跑 3 轮，同样的任务分布与故障窗口）：
+
+```powershell
+docker compose up -d mysql
+pwsh -NoProfile -File scripts/phase-4-comparison-experiment.ps1              # 先构建再运行
+pwsh -NoProfile -File scripts/phase-4-comparison-experiment.ps1 -SkipBuild   # 复用已构建的 jar
+pwsh -NoProfile -File scripts/phase-4-comparison-experiment.ps1 -Rounds 1 -TaskCount 120 -SkipBuild  # 冒烟（单轮）
+```
+
+每轮都重启一个干净实例，空转 3 s 后提交 150 个 `downstream` 任务（`maxAttempts=4`，重试用内置指数退避），提交后 3 s 通过 `PUT /api/v1/fault-lab/downstream` 注入 1500 ms 延迟与 100% 失败并持续 20 s，再恢复下游并等待全部任务到达终态。两种策略各跑 3 轮：固定并发用 `reactor.adaptive.enabled=false` + `concurrency=8`，自适应用初始 4 / 下限 1 / 上限 8、冷却与恢复观察各 3 s。每秒采样并发度、在飞、积压、队列与执行延迟、吞吐，并读取 `scheduler_decision` 全量决策行；每轮通过 `POST /api/v1/experiments` 落一行 `experiment_run`，全部证据（采样、决策行、实例日志、构建日志）写入 `docs/reports/phase-4/<UTC 时间戳>/raw-result.json`。实测结果与局限见 [`docs/reports/phase-4-comparison-experiment.md`](docs/reports/phase-4-comparison-experiment.md)。
+
 ### 访问 Docker Hub
 
 Testcontainers 需要 `testcontainers/ryuk` 与 `mysql:8.4`。本机 `registry-1.docker.io` 直连超时，已在 Docker Desktop 配置手动代理 `http://127.0.0.1:7890`（`%APPDATA%\Docker\settings-store.json` 中的 `ProxyHTTPMode=manual` 与 `OverrideProxyHTTP/OverrideProxyHTTPS`），两个镜像均可正常拉取。改动代理设置后需要重启 Docker Desktop 才生效：`docker desktop restart`。
@@ -291,3 +312,4 @@ docker tag  docker.m.daocloud.io/library/mysql:8.4 mysql:8.4
 - `AGENTS.md`：开发纪律、模块边界、测试要求与本机环境
 - [`docs/reports/phase-2-recovery.md`](docs/reports/phase-2-recovery.md)：第二阶段故障恢复实验报告
 - [`docs/reports/phase-3-adaptive-control.md`](docs/reports/phase-3-adaptive-control.md)：第三阶段自适应并发控制实验报告
+- [`docs/reports/phase-4-comparison-experiment.md`](docs/reports/phase-4-comparison-experiment.md)：第四阶段固定并发与自适应并发对照实验报告
