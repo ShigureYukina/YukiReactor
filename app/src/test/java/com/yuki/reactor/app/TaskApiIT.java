@@ -7,6 +7,7 @@ import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.httpBasic;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -132,12 +133,14 @@ class TaskApiIT extends AbstractIntegrationTest {
         String body = "{\"operator\":\"alice\",\"reason\":\"duplicate order\"}";
 
         mockMvc.perform(post("/api/v1/tasks/{id}/cancel", taskId)
+                        .with(httpBasic("admin", "admin-test"))
                         .contentType(APPLICATION_JSON).content(body))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("CANCELLED"))
                 .andExpect(jsonPath("$.lastError").value("cancelled by alice: duplicate order"));
 
         mockMvc.perform(post("/api/v1/tasks/{id}/cancel", taskId)
+                        .with(httpBasic("admin", "admin-test"))
                         .contentType(APPLICATION_JSON).content(body))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("ILLEGAL_TASK_TRANSITION"));
@@ -148,11 +151,13 @@ class TaskApiIT extends AbstractIntegrationTest {
         long taskId = submit("echo", "{}").task().id();
 
         mockMvc.perform(post("/api/v1/tasks/{id}/cancel", taskId)
+                        .with(httpBasic("admin", "admin-test"))
                         .contentType(APPLICATION_JSON).content("{\"reason\":\"no operator\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
 
         mockMvc.perform(post("/api/v1/tasks/{id}/replay", taskId)
+                        .with(httpBasic("admin", "admin-test"))
                         .contentType(APPLICATION_JSON).content("{\"operator\":\"alice\"}"))
                 .andExpect(status().isBadRequest());
     }
@@ -162,6 +167,7 @@ class TaskApiIT extends AbstractIntegrationTest {
         long taskId = submit("echo", "{}").task().id();
 
         mockMvc.perform(post("/api/v1/tasks/{id}/replay", taskId)
+                        .with(httpBasic("admin", "admin-test"))
                         .contentType(APPLICATION_JSON)
                         .content("{\"operator\":\"alice\",\"reason\":\"retry please\"}"))
                 .andExpect(status().isConflict())

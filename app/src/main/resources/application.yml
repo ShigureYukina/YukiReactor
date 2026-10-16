@@ -79,6 +79,14 @@ reactor:
     failure-kind: TRANSIENT
     retry-after-ms: 2000
     seed: 0
+  # Authentication and authorization for the management endpoints (PRD 8.4): task cancel, task
+  # replay and fault injection require a user with the ADMIN role. The default password is for
+  # local development only - override REACTOR_ADMIN_PASSWORD anywhere else.
+  security:
+    users:
+      admin:
+        password: ${REACTOR_ADMIN_PASSWORD:reactor-dev}
+        roles: ADMIN
 
 management:
   endpoints:

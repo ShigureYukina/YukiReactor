@@ -33,7 +33,8 @@ Reactor 关注的不是"任务能不能跑起来"，而是任务在异常条件�
 | 并发度调整的决策记录（`scheduler_decision`，只写） | ✅ 第三阶段 |
 | 任务级调度决策记录（延迟、重试退避、重试耗尽、租约回收的原因码） | ✅ 第四阶段 |
 | 任务时间线、决策查询、指标聚合、实验记录与静态面板 | ✅ 第四阶段 |
-| 管理接口认证与鉴权 | ❌ 第五阶段 |
+| 管理接口认证与权限校验（HTTP Basic + ADMIN 角色） | ✅ 第五阶段 |
+| Docker 镜像与 Compose 一键部署 | ✅ 第五阶段 |
 
 未实现的能力不会在代码里留空壳或未使用的抽象；对应模块在各自阶段才创建。
 
@@ -101,6 +102,28 @@ curl.exe -s http://localhost:8080/api/v1/tasks/1/executions
 
 静态面板在 `http://localhost:8080/panel/index.html`：无构建步骤的单个 HTML，直接调用上面的接口展示任务时间线、决策查询与指标摘要。
 
+### 管理接口的认证与权限
+
+取消、重放与故障注入是运维写操作（PRD §8.4），需要 HTTP Basic 认证且用户具有 `ADMIN` 角色；读取接口（任务提交/查询、执行历史、时间线、决策、指标、实验记录、面板与 actuator）保持开放，实验脚本与监控不需要凭证：
+
+```powershell
+# 无凭证 → 401 {"code":"UNAUTHORIZED", ...}
+curl.exe -s -X POST http://localhost:8080/api/v1/tasks/1/cancel -H "Content-Type: application/json" -d '{"operator":"alice","reason":"duplicate order"}'
+
+# 有凭证但无 ADMIN 角色 → 403 {"code":"FORBIDDEN", ...}
+# 有凭证且有 ADMIN 角色 → 正常执行
+curl.exe -s -u admin:reactor-dev -X POST http://localhost:8080/api/v1/tasks/1/cancel -H "Content-Type: application/json" -d '{"operator":"alice","reason":"duplicate order"}'
+```
+
+用户与角色在配置中维护，密码经环境变量注入（`reactor-dev` 只是本机开发默认值，任何非本机环境必须覆盖）：
+
+| 配置项 | 默认值 | 说明 |
+|---|---|---|
+| `reactor.security.users.<用户名>.password` | `${REACTOR_ADMIN_PASSWORD:reactor-dev}` | 该用户的密码；留空则启动失败 |
+| `reactor.security.users.<用户名>.roles` | 无 | 角色列表；`ADMIN` 放行全部管理写操作，其他角色只能认证通过 |
+
+realm 为 `reactor`，错误响应与 REST 错误同形（`{code, message}`），不会返回 HTML 登录页。会话策略为无状态（不创建 cookie），CSRF 已按纯 API 场景关闭。
+
 提交请求字段：
 
 ```json
@@ -119,7 +142,7 @@ curl.exe -s http://localhost:8080/api/v1/tasks/1/executions
 - `idempotencyScope` + `idempotencyKey`：**同一调用方、同一幂等键只能创建一个逻辑任务**，由数据库唯一键 `uk_task_idempotency` 保证；重复提交返回已有任务标识。不同业务范围中的相同字符串不视为同一任务。不传幂等键时允许重复创建。
 - `payload` 只能是 JSON 对象，且**仅被当作数据**：不会被反射成类名、SQL 或脚本执行。
 
-错误码：`TASK_NOT_FOUND`(404)、`UNKNOWN_TASK_TYPE`(400)、`INVALID_REQUEST`(400)、`ILLEGAL_TASK_TRANSITION`(409)、`INVALID_TASK_STATE`(409)、`IDEMPOTENCY_CONFLICT`(409)、`DUPLICATE_EXPERIMENT_ROUND`(409)、`INTERNAL_ERROR`(500)。
+错误码：`TASK_NOT_FOUND`(404)、`UNKNOWN_TASK_TYPE`(400)、`INVALID_REQUEST`(400)、`ILLEGAL_TASK_TRANSITION`(409)、`INVALID_TASK_STATE`(409)、`IDEMPOTENCY_CONFLICT`(409)、`DUPLICATE_EXPERIMENT_ROUND`(409)、`UNAUTHORIZED`(401)、`FORBIDDEN`(403)、`INTERNAL_ERROR`(500)。
 
 ## 任务状态机
 
@@ -243,6 +266,11 @@ public class ReportTaskHandler implements TaskHandler {
 | `reactor.fault-lab.retry-after-ms` | `2000` | `THROTTLED` 时下发给调度器的等待指示 |
 | `reactor.fault-lab.seed` | `0` | 随机种子（0 表示随机）；固定种子让故障注入可复现 |
 
+| 配置项 | 默认值 | 说明 |
+|---|---|---|
+| `reactor.security.users.<用户名>.password` | `${REACTOR_ADMIN_PASSWORD:reactor-dev}` | 管理接口用户的密码，仅本机开发用默认值 |
+| `reactor.security.users.<用户名>.roles` | 无 | 该用户的角色；`ADMIN` 才能调用取消/重放/故障注入 |
+
 以上参数都可在运行时通过 `PUT /api/v1/fault-lab/downstream` 覆盖（必须带 `operator`，变更写日志）。Actuator 暴露 `health,metrics,info`；控制器注册的指标：`reactor.adaptive.concurrency.limit`（当前并发度，gauge）、`reactor.adaptive.concurrency.max`（上限，gauge）、`reactor.adaptive.concurrency.adjustments`（按 `reason` 标签累计的调整次数，counter）。
 
 数据库连接可用环境变量覆盖：`MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_DATABASE`、`MYSQL_USER`、`MYSQL_PASSWORD`。时间统一使用 UTC，通过注入的 `Clock` 获取。
@@ -255,8 +283,8 @@ $env:JAVA_HOME="$env:USERPROFILE\.jdks\jdk-21.0.12.1+1"
 ```
 
 - 单元测试（`task-core`、`observability`、`adaptive-controller`，不需要 Docker）：状态机全部合法/非法转换、任务类型注册表、退避计算（含抖动边界与上限）、重试派发限速器、失败分类；共享并发度的钳制语义、观测信号滚动窗口的聚合与淘汰；决策分页与按原因码过滤、任务时间线的事件顺序与类型、指标窗口口径（半开区间、失败率与吞吐分母）、实验记录的去重与按名称汇总；AIMD 控制律（递增步长与上限钳制、连续越界才下调、单次降幅上限、下界钳制、冷却、上调前的健康观察窗口、指标缺失与计数不可读时回退保守并发度、参数校验）。
-- 集成测试（`app`，**Testcontainers + MySQL 8，不使用 H2**）：执行成功/失败流程、16 线程并发幂等提交、多引擎竞争的"恰好领取一次"、过期 fencing token 被拒、取消与重放、REST 契约、心跳续约阻止误回收、过期租约回收后由其它实例完成、孤儿执行记录清理、退避窗口内不派发、下游 `retryAfter` 指示优先、不可重试错误立即失败、尝试次数用尽后停止重试、超时中断、按类型并发上限、重试派发限速、运行中由外部改变并发度后派发被限制而不重启引擎、过载下调与恢复上调各写一条带前后值的决策记录、定时采样循环能自行完成调整、模拟下游的失败映射与 `retryAfter` 传递、控制接口的 `operator` 审计、任务时间线/决策查询/指标聚合/实验记录的 HTTP 与服务层契约（含重复轮次 409 与静态面板资源），以及「副作用已产生但成功状态未写入」故障窗口的专项验证。
-- 集成测试需要 Docker 可用。当前规模：**152 个测试** —— `task-core` 50 + `observability` 20 + `adaptive-controller` 11（单元测试）+ `app` 71（Testcontainers 集成测试），`.\mvnw.cmd -B verify` → `BUILD SUCCESS`。
+- 集成测试（`app`，**Testcontainers + MySQL 8，不使用 H2**）：执行成功/失败流程、16 线程并发幂等提交、多引擎竞争的"恰好领取一次"、过期 fencing token 被拒、取消与重放、REST 契约、心跳续约阻止误回收、过期租约回收后由其它实例完成、孤儿执行记录清理、退避窗口内不派发、下游 `retryAfter` 指示优先、不可重试错误立即失败、尝试次数用尽后停止重试、超时中断、按类型并发上限、重试派发限速、运行中由外部改变并发度后派发被限制而不重启引擎、过载下调与恢复上调各写一条带前后值的决策记录、定时采样循环能自行完成调整、模拟下游的失败映射与 `retryAfter` 传递、控制接口的 `operator` 审计、任务时间线/决策查询/指标聚合/实验记录的 HTTP 与服务层契约（含重复轮次 409 与静态面板资源）、管理端点认证与权限（无凭证 401、错误密码 401、无 ADMIN 角色 403、ADMIN 放行、读取接口匿名可访问），以及「副作用已产生但成功状态未写入」故障窗口的专项验证。
+- 集成测试需要 Docker 可用。当前规模：**158 个测试** —— `task-core` 50 + `observability` 20 + `adaptive-controller` 11（单元测试）+ `app` 77（Testcontainers 集成测试），`.\mvnw.cmd -B verify` → `BUILD SUCCESS`。
 
 ## 故障实验
 
@@ -278,6 +306,8 @@ pwsh -NoProfile -File scripts/phase-3-adaptive-experiment.ps1              # 先
 pwsh -NoProfile -File scripts/phase-3-adaptive-experiment.ps1 -SkipBuild   # 复用已构建的 jar
 ```
 
+故障注入同样需要 `ADMIN` 凭证（`-AdminUser` / `-AdminPassword` 或 `REACTOR_ADMIN_PASSWORD`，默认 `admin` + 开发默认密码）。
+
 脚本启用自适应控制（初始并发 4、上限 8、冷却与恢复观察各 3 s）并跑四段：健康下游下把并发度升到上限 → 通过 `PUT /api/v1/fault-lab/downstream` 注入 1500 ms 延迟与 100% 失败，观察并发度降到 1 → 恢复下游并提交 100 个任务，观察并发度重新升到上限 → 关闭自适应、固定并发 4 重跑同一段过载作为对照。全程记录并发度时间线、`scheduler_decision` 决策行（原因码与调整前后值）与固定并发对照的峰值在飞任务数，写入 `docs/reports/phase-3/<UTC 时间戳>/raw-result.json`，实例日志与构建日志同目录保存。实测结果与局限见 [`docs/reports/phase-3-adaptive-control.md`](docs/reports/phase-3-adaptive-control.md)。
 
 本机可复现的固定并发与自适应并发对照实验（两种策略各跑 3 轮，同样的任务分布与故障窗口）：
@@ -288,6 +318,8 @@ pwsh -NoProfile -File scripts/phase-4-comparison-experiment.ps1              # �
 pwsh -NoProfile -File scripts/phase-4-comparison-experiment.ps1 -SkipBuild   # 复用已构建的 jar
 pwsh -NoProfile -File scripts/phase-4-comparison-experiment.ps1 -Rounds 1 -TaskCount 120 -SkipBuild  # 冒烟（单轮）
 ```
+
+实验脚本的故障注入走管理接口，需要 `ADMIN` 凭证：默认使用 `admin` + 开发默认密码，可用 `-AdminUser` / `-AdminPassword` 或环境变量 `REACTOR_ADMIN_PASSWORD` 覆盖（凭证不会写入证据文件）。
 
 每轮都重启一个干净实例，空转 3 s 后提交 150 个 `downstream` 任务（`maxAttempts=4`，重试用内置指数退避），提交后 3 s 通过 `PUT /api/v1/fault-lab/downstream` 注入 1500 ms 延迟与 100% 失败并持续 20 s，再恢复下游并等待全部任务到达终态。两种策略各跑 3 轮：固定并发用 `reactor.adaptive.enabled=false` + `concurrency=8`，自适应用初始 4 / 下限 1 / 上限 8、冷却与恢复观察各 3 s。每秒采样并发度、在飞、积压、队列与执行延迟、吞吐，并读取 `scheduler_decision` 全量决策行；每轮通过 `POST /api/v1/experiments` 落一行 `experiment_run`，全部证据（采样、决策行、实例日志、构建日志）写入 `docs/reports/phase-4/<UTC 时间戳>/raw-result.json`。实测结果与局限见 [`docs/reports/phase-4-comparison-experiment.md`](docs/reports/phase-4-comparison-experiment.md)。
 

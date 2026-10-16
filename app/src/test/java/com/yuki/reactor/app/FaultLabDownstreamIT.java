@@ -14,6 +14,7 @@ import java.time.Duration;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.httpBasic;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -80,6 +81,7 @@ class FaultLabDownstreamIT extends AbstractIntegrationTest {
     @Test
     void exposesTheDownstreamConfigurationThroughTheApi() throws Exception {
         mockMvc.perform(put("/api/v1/fault-lab/downstream")
+                        .with(httpBasic("admin", "admin-test"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"operator\": \"alice\", \"latencyMs\": 123, \"errorRate\": 0.25}"))
                 .andExpect(status().isOk())
@@ -87,6 +89,7 @@ class FaultLabDownstreamIT extends AbstractIntegrationTest {
                 .andExpect(jsonPath("$.errorRate").value(0.25));
 
         mockMvc.perform(put("/api/v1/fault-lab/downstream")
+                        .with(httpBasic("admin", "admin-test"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"latencyMs\": 50}"))
                 .andExpect(status().isBadRequest())
