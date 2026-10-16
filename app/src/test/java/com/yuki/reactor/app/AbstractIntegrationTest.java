@@ -97,6 +97,7 @@ public abstract class AbstractIntegrationTest {
         jdbcTemplate.execute("DELETE FROM task_execution");
         jdbcTemplate.execute("DELETE FROM task");
         jdbcTemplate.execute("DELETE FROM scheduler_decision");
+        jdbcTemplate.execute("DELETE FROM experiment_run");
     }
 
     @AfterEach
