@@ -31,6 +31,19 @@
             <groupId>com.yuki</groupId>
             <artifactId>reactor-task-recovery</artifactId>
         </dependency>
+        <dependency>
+            <groupId>com.yuki</groupId>
+            <artifactId>reactor-fault-lab</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.yuki</groupId>
+            <artifactId>reactor-adaptive-controller</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>com.mysql</groupId>

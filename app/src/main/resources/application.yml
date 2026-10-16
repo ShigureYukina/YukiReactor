@@ -53,6 +53,38 @@ reactor:
     scan-interval: 5s
     batch-size: 50
     orphan-sweep-enabled: true
+  # Adaptive concurrency control (PRD 5.5). Disabled by default so the engine keeps the fixed
+  # concurrency semantics unless the experiment explicitly turns it on.
+  adaptive:
+    enabled: false
+    min-concurrency: 1
+    max-concurrency: 8
+    initial-concurrency: 4
+    sample-interval: 2s
+    latency-threshold: 500ms
+    error-rate-threshold: 0.3
+    timeout-rate-threshold: 0.2
+    increase-step: 1
+    decrease-factor: 0.5
+    max-decrease-step: 4
+    cooldown: 10s
+    consecutive-breaches-before-decrease: 2
+    recovery-observation: 15s
+    conservative-concurrency: 1
+  # Simulated downstream used by the fault experiments and by the `downstream` task type.
+  fault-lab:
+    latency-ms: 0
+    jitter-ms: 0
+    error-rate: 0.0
+    failure-kind: TRANSIENT
+    retry-after-ms: 2000
+    seed: 0
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,info
 
 logging:
   level:
