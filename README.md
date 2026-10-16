@@ -6,8 +6,8 @@ Reactor 关注的不是"任务能不能跑起来"，而是任务在异常条件�
 
 - 需求文档（唯一权威来源）：[`docs/PRD.md`](docs/PRD.md)
 - 开发准则与硬约束：[`AGENTS.md`](AGENTS.md)
-- 当前进度：**第四阶段（调度解释与故障实验）已完成**
-- 实验报告：[第二阶段故障恢复](docs/reports/phase-2-recovery.md) · [第三阶段自适应并发控制](docs/reports/phase-3-adaptive-control.md) · [第四阶段固定并发与自适应并发对照](docs/reports/phase-4-comparison-experiment.md)
+- 当前进度：**第五阶段（工程完善）已完成，V1.0 七项能力全部交付**
+- 实验报告：[第二阶段故障恢复](docs/reports/phase-2-recovery.md) · [第三阶段自适应并发控制](docs/reports/phase-3-adaptive-control.md) · [第四阶段固定并发与自适应并发对照](docs/reports/phase-4-comparison-experiment.md) · [第五阶段工程完善](docs/reports/phase-5-engineering.md)
 
 > 本文件在每阶段结束时更新。已实现与未实现的能力在下表如实列出。
 
@@ -35,6 +35,8 @@ Reactor 关注的不是"任务能不能跑起来"，而是任务在异常条件�
 | 任务时间线、决策查询、指标聚合、实验记录与静态面板 | ✅ 第四阶段 |
 | 管理接口认证与权限校验（HTTP Basic + ADMIN 角色） | ✅ 第五阶段 |
 | Docker 镜像与 Compose 一键部署 | ✅ 第五阶段 |
+| HTTP 契约负路径测试（400/404/409 全谱系） | ✅ 第五阶段 |
+| 一键演示脚本（提交→执行→故障→解释） | ✅ 第五阶段 |
 
 未实现的能力不会在代码里留空壳或未使用的抽象；对应模块在各自阶段才创建。
 
@@ -311,8 +313,8 @@ $env:JAVA_HOME="$env:USERPROFILE\.jdks\jdk-21.0.12.1+1"
 ```
 
 - 单元测试（`task-core`、`observability`、`adaptive-controller`，不需要 Docker）：状态机全部合法/非法转换、任务类型注册表、退避计算（含抖动边界与上限）、重试派发限速器、失败分类；共享并发度的钳制语义、观测信号滚动窗口的聚合与淘汰；决策分页与按原因码过滤、任务时间线的事件顺序与类型、指标窗口口径（半开区间、失败率与吞吐分母）、实验记录的去重与按名称汇总；AIMD 控制律（递增步长与上限钳制、连续越界才下调、单次降幅上限、下界钳制、冷却、上调前的健康观察窗口、指标缺失与计数不可读时回退保守并发度、参数校验）。
-- 集成测试（`app`，**Testcontainers + MySQL 8，不使用 H2**）：执行成功/失败流程、16 线程并发幂等提交、多引擎竞争的"恰好领取一次"、过期 fencing token 被拒、取消与重放、REST 契约、心跳续约阻止误回收、过期租约回收后由其它实例完成、孤儿执行记录清理、退避窗口内不派发、下游 `retryAfter` 指示优先、不可重试错误立即失败、尝试次数用尽后停止重试、超时中断、按类型并发上限、重试派发限速、运行中由外部改变并发度后派发被限制而不重启引擎、过载下调与恢复上调各写一条带前后值的决策记录、定时采样循环能自行完成调整、模拟下游的失败映射与 `retryAfter` 传递、控制接口的 `operator` 审计、任务时间线/决策查询/指标聚合/实验记录的 HTTP 与服务层契约（含重复轮次 409 与静态面板资源）、管理端点认证与权限（无凭证 401、错误密码 401、无 ADMIN 角色 403、ADMIN 放行、读取接口匿名可访问），以及「副作用已产生但成功状态未写入」故障窗口的专项验证。
-- 集成测试需要 Docker 可用。当前规模：**158 个测试** —— `task-core` 50 + `observability` 20 + `adaptive-controller` 11（单元测试）+ `app` 77（Testcontainers 集成测试），`.\mvnw.cmd -B verify` → `BUILD SUCCESS`。
+- 集成测试（`app`，**Testcontainers + MySQL 8，不使用 H2**）：执行成功/失败流程、16 线程并发幂等提交、多引擎竞争的"恰好领取一次"、过期 fencing token 被拒、取消与重放、REST 契约、心跳续约阻止误回收、过期租约回收后由其它实例完成、孤儿执行记录清理、退避窗口内不派发、下游 `retryAfter` 指示优先、不可重试错误立即失败、尝试次数用尽后停止重试、超时中断、按类型并发上限、重试派发限速、运行中由外部改变并发度后派发被限制而不重启引擎、过载下调与恢复上调各写一条带前后值的决策记录、定时采样循环能自行完成调整、模拟下游的失败映射与 `retryAfter` 传递、控制接口的 `operator` 审计、任务时间线/决策查询/指标聚合/实验记录的 HTTP 与服务层契约（含重复轮次 409 与静态面板资源）、管理端点认证与权限（无凭证 401、错误密码 401、无 ADMIN 角色 403、ADMIN 放行、读取接口匿名可访问）、HTTP 契约负路径（畸形/越界提交 400、未知任务 404、运行中取消 409、非法查询参数 400），以及「副作用已产生但成功状态未写入」故障窗口的专项验证。
+- 集成测试需要 Docker 可用。当前规模：**165 个测试** —— `task-core` 50 + `observability` 20 + `adaptive-controller` 11（单元测试）+ `app` 84（Testcontainers 集成测试），`.\mvnw.cmd -B verify` → `BUILD SUCCESS`。
 
 ## 故障实验
 
@@ -351,6 +353,17 @@ pwsh -NoProfile -File scripts/phase-4-comparison-experiment.ps1 -Rounds 1 -TaskC
 
 每轮都重启一个干净实例，空转 3 s 后提交 150 个 `downstream` 任务（`maxAttempts=4`，重试用内置指数退避），提交后 3 s 通过 `PUT /api/v1/fault-lab/downstream` 注入 1500 ms 延迟与 100% 失败并持续 20 s，再恢复下游并等待全部任务到达终态。两种策略各跑 3 轮：固定并发用 `reactor.adaptive.enabled=false` + `concurrency=8`，自适应用初始 4 / 下限 1 / 上限 8、冷却与恢复观察各 3 s。每秒采样并发度、在飞、积压、队列与执行延迟、吞吐，并读取 `scheduler_decision` 全量决策行；每轮通过 `POST /api/v1/experiments` 落一行 `experiment_run`，全部证据（采样、决策行、实例日志、构建日志）写入 `docs/reports/phase-4/<UTC 时间戳>/raw-result.json`。实测结果与局限见 [`docs/reports/phase-4-comparison-experiment.md`](docs/reports/phase-4-comparison-experiment.md)。
 
+## 演示
+
+一键演示脚本跑完「提交执行 → 取消与审计 → 故障注入与重试 → 时间线解释 → 指标与面板」五步，所有输出来自运行系统的真实响应（PRD §13 的三条成功标准各对应一段）：
+
+```powershell
+docker compose up -d mysql
+pwsh -NoProfile -File scripts/demo.ps1
+```
+
+脚本会自行启动/停止引擎实例（第二步临时切换为 `reactor.worker.enabled=false` 的 API-only 实例，保证取消目标停在 `PENDING`），凭证默认 `admin` + 开发默认密码，可用 `-AdminUser` / `-AdminPassword` 或 `REACTOR_ADMIN_PASSWORD` 覆盖。实测输出见 [`docs/reports/phase-5-engineering.md`](docs/reports/phase-5-engineering.md) 第 5 节。
+
 ### 访问 Docker Hub
 
 Testcontainers 需要 `testcontainers/ryuk` 与 `mysql:8.4`。本机 `registry-1.docker.io` 直连超时，已在 Docker Desktop 配置手动代理 `http://127.0.0.1:7890`（`%APPDATA%\Docker\settings-store.json` 中的 `ProxyHTTPMode=manual` 与 `OverrideProxyHTTP/OverrideProxyHTTPS`），两个镜像均可正常拉取。改动代理设置后需要重启 Docker Desktop 才生效：`docker desktop restart`。
@@ -373,3 +386,4 @@ docker tag  docker.m.daocloud.io/library/mysql:8.4 mysql:8.4
 - [`docs/reports/phase-2-recovery.md`](docs/reports/phase-2-recovery.md)：第二阶段故障恢复实验报告
 - [`docs/reports/phase-3-adaptive-control.md`](docs/reports/phase-3-adaptive-control.md)：第三阶段自适应并发控制实验报告
 - [`docs/reports/phase-4-comparison-experiment.md`](docs/reports/phase-4-comparison-experiment.md)：第四阶段固定并发与自适应并发对照实验报告
+- [`docs/reports/phase-5-engineering.md`](docs/reports/phase-5-engineering.md)：第五阶段工程完善报告（认证与权限、部署、异常测试、演示与局限）
