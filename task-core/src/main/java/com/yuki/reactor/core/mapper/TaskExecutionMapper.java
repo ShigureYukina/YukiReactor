@@ -80,4 +80,48 @@ public interface TaskExecutionMapper extends BaseMapper<TaskExecution> {
              LIMIT #{limit}
             """)
     List<TaskExecution> findOrphanOpenExecutions(@Param("limit") int limit);
+
+    /** Execution attempts started in a window: the denominator of "attempts per task" (PRD 10.2). */
+    @Select("""
+            SELECT COUNT(*)
+              FROM task_execution
+             WHERE started_at >= #{from}
+               AND started_at < #{to}
+            """)
+    long countStartedBetween(@Param("from") LocalDateTime from, @Param("to") LocalDateTime to);
+
+    /** Logical tasks that were attempted at least once in the window. */
+    @Select("""
+            SELECT COUNT(DISTINCT task_id)
+              FROM task_execution
+             WHERE started_at >= #{from}
+               AND started_at < #{to}
+            """)
+    long countDistinctTasksBetween(@Param("from") LocalDateTime from, @Param("to") LocalDateTime to);
+
+    /**
+     * Queue delay in milliseconds: from the moment the logical task was submitted to the moment an
+     * attempt actually started (PRD 10.2). Averaged over the attempts started in the window.
+     */
+    @Select("""
+            SELECT AVG(TIMESTAMPDIFF(MICROSECOND, t.created_at, e.started_at) / 1000.0)
+              FROM task_execution e
+              JOIN task t ON t.id = e.task_id
+             WHERE e.started_at >= #{from}
+               AND e.started_at < #{to}
+            """)
+    Double avgQueueDelayMs(@Param("from") LocalDateTime from, @Param("to") LocalDateTime to);
+
+    /**
+     * Execution delay in milliseconds: from the start of an attempt to the moment it reported a
+     * result (PRD 10.2). Averaged over the attempts finished in the window.
+     */
+    @Select("""
+            SELECT AVG(TIMESTAMPDIFF(MICROSECOND, e.started_at, e.finished_at) / 1000.0)
+              FROM task_execution e
+             WHERE e.finished_at IS NOT NULL
+               AND e.finished_at >= #{from}
+               AND e.finished_at < #{to}
+            """)
+    Double avgExecutionDelayMs(@Param("from") LocalDateTime from, @Param("to") LocalDateTime to);
 }

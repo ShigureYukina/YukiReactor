@@ -297,4 +297,39 @@ public interface TaskMapper extends BaseMapper<Task> {
                AND next_run_at <= #{now}
             """)
     long countDueBacklog(@Param("now") LocalDateTime now);
+
+    /** Tasks waiting to run, whether or not their eligibility time has come (the backlog). */
+    @Select("""
+            SELECT COUNT(*)
+              FROM task
+             WHERE status IN ('PENDING', 'RETRY_WAIT')
+            """)
+    long countBacklog();
+
+    @Select("SELECT COUNT(*) FROM task WHERE status = #{status}")
+    long countByStatus(@Param("status") TaskStatus status);
+
+    /** Tasks submitted in a window, used for throughput and backlog explanations (PRD 10.2). */
+    @Select("""
+            SELECT COUNT(*)
+              FROM task
+             WHERE created_at >= #{from}
+               AND created_at < #{to}
+            """)
+    long countCreatedBetween(@Param("from") LocalDateTime from, @Param("to") LocalDateTime to);
+
+    /**
+     * Tasks that reached the given terminal state inside the window. The window is applied to
+     * {@code updated_at}, which is the moment the terminal state was written.
+     */
+    @Select("""
+            SELECT COUNT(*)
+              FROM task
+             WHERE status = #{status}
+               AND updated_at >= #{from}
+               AND updated_at < #{to}
+            """)
+    long countReachedStatusBetween(@Param("status") TaskStatus status,
+                                   @Param("from") LocalDateTime from,
+                                   @Param("to") LocalDateTime to);
 }
