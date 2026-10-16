@@ -90,7 +90,8 @@ class TaskAdminIT extends AbstractIntegrationTest {
     @Test
     void replayOfFailedTaskRestartsExecutionAndKeepsBothAttempts() {
         startWorker(2);
-        long taskId = submit("echo", "{\"fail\": true}").task().id();
+        // A single attempt budget keeps the replay test focused: one failure, one replay, two rows.
+        long taskId = submit("echo", "{\"fail\": true}", 1).task().id();
         await().atMost(15, SECONDS).untilAsserted(() ->
                 assertThat(task(taskId).status()).isEqualTo(TaskStatus.FAILED));
 

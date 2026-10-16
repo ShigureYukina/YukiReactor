@@ -1,9 +1,11 @@
 package com.yuki.reactor.app;
 
+import com.yuki.reactor.core.domain.ErrorCodes;
 import com.yuki.reactor.core.domain.ExecutionResult;
 import com.yuki.reactor.core.domain.TaskStatus;
 import com.yuki.reactor.core.dto.TaskExecutionView;
 import com.yuki.reactor.core.dto.TaskView;
+import com.yuki.reactor.core.error.ErrorCategory;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -45,7 +47,9 @@ class TaskWorkerFlowIT extends AbstractIntegrationTest {
     @Test
     void reportsHandlerFailureAsFailedTaskWithReasonAndTouchedExecution() {
         startWorker(1);
-        long taskId = submit("echo", "{\"fail\": true}").task().id();
+        // The echo handler throws an unclassified exception, which is retryable; with a budget of a
+        // single attempt the task therefore goes straight to FAILED (PRD 5.4).
+        long taskId = submit("echo", "{\"fail\": true}", 1).task().id();
 
         await().atMost(15, SECONDS).untilAsserted(() ->
                 assertThat(task(taskId).status()).isEqualTo(TaskStatus.FAILED));
@@ -53,12 +57,16 @@ class TaskWorkerFlowIT extends AbstractIntegrationTest {
         TaskView view = task(taskId);
         assertThat(view.attemptCount()).isEqualTo(1);
         assertThat(view.lastError()).contains("echo handler was asked to fail");
+        assertThat(view.lastError())
+                .as("the attempt budget is the most specific reason left on the task itself")
+                .contains(ErrorCodes.MAX_RETRIES_EXCEEDED);
 
         List<TaskExecutionView> executions = taskService.executions(taskId);
         assertThat(executions).hasSize(1);
         TaskExecutionView attempt = executions.getFirst();
         assertThat(attempt.result()).isEqualTo(ExecutionResult.FAILED);
-        assertThat(attempt.errorCode()).isEqualTo("EXECUTION_ERROR");
+        assertThat(attempt.errorCode()).isEqualTo(ErrorCodes.MAX_RETRIES_EXCEEDED);
+        assertThat(attempt.errorCategory()).isEqualTo(ErrorCategory.UNKNOWN);
         assertThat(attempt.errorMessage()).contains("echo handler was asked to fail");
         assertThat(attempt.finishedAt()).isNotNull();
     }

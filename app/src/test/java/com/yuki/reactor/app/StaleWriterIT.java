@@ -4,6 +4,8 @@ import com.yuki.reactor.core.domain.ErrorCodes;
 import com.yuki.reactor.core.domain.ExecutionResult;
 import com.yuki.reactor.core.domain.TaskStatus;
 import com.yuki.reactor.core.dto.TaskExecutionView;
+import com.yuki.reactor.core.error.ErrorCategory;
+import com.yuki.reactor.core.error.TaskFailure;
 import com.yuki.reactor.core.service.TaskClaim;
 import org.junit.jupiter.api.Test;
 
@@ -63,7 +65,7 @@ class StaleWriterIT extends AbstractIntegrationTest {
         long currentToken = claim.task().getFencingToken();
 
         boolean applied = taskOperations.fail(taskId, claim.execution().getId(), currentToken + 1,
-                ErrorCodes.EXECUTION_ERROR, "boom", now);
+                TaskFailure.of(ErrorCategory.TRANSIENT, ErrorCodes.EXECUTION_ERROR, "boom"), now);
 
         assertThat(applied).isFalse();
         assertThat(taskOperations.get(taskId).getStatus()).isEqualTo(TaskStatus.RUNNING);
@@ -84,7 +86,7 @@ class StaleWriterIT extends AbstractIntegrationTest {
         assertThat(taskOperations.complete(taskId, claim.execution().getId(), token, now)).isTrue();
 
         assertThat(taskOperations.fail(taskId, claim.execution().getId(), token,
-                ErrorCodes.EXECUTION_ERROR, "late failure", now)).isFalse();
+                TaskFailure.of(ErrorCategory.TRANSIENT, ErrorCodes.EXECUTION_ERROR, "late failure"), now)).isFalse();
 
         assertThat(taskOperations.get(taskId).getStatus()).isEqualTo(TaskStatus.SUCCEEDED);
         assertThat(taskOperations.get(taskId).getLastError()).isNull();
