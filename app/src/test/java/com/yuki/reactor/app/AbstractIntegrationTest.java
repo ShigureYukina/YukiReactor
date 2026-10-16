@@ -2,6 +2,7 @@ package com.yuki.reactor.app;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yuki.reactor.core.concurrency.ConcurrencyLimit;
+import com.yuki.reactor.core.decision.SchedulerDecisionRecorder;
 import com.yuki.reactor.core.domain.TaskStatus;
 import com.yuki.reactor.core.dto.TaskExecutionView;
 import com.yuki.reactor.core.dto.TaskView;
@@ -84,6 +85,9 @@ public abstract class AbstractIntegrationTest {
     @Autowired
     protected RuntimeSignals runtimeSignals;
 
+    @Autowired
+    protected SchedulerDecisionRecorder schedulerDecisionRecorder;
+
     private final List<TaskWorkerEngine> startedWorkers = new ArrayList<>();
 
     private final List<LeaseRecoveryScanner> startedScanners = new ArrayList<>();
@@ -149,7 +153,7 @@ public abstract class AbstractIntegrationTest {
     protected TaskWorkerEngine startWorker(TaskWorkerProperties properties, RetryProperties retry,
                                            ConcurrencyLimit limit) {
         TaskWorkerEngine engine = new TaskWorkerEngine(taskOperations, taskHandlerRegistry, properties,
-                retry, runtimeSignals, limit, objectMapper, clock, null);
+                retry, runtimeSignals, limit, objectMapper, clock, null, schedulerDecisionRecorder);
         engine.start();
         startedWorkers.add(engine);
         return engine;
