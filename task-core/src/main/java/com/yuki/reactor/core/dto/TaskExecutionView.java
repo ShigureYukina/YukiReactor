@@ -2,12 +2,13 @@ package com.yuki.reactor.core.dto;
 
 import com.yuki.reactor.core.domain.ExecutionResult;
 import com.yuki.reactor.core.domain.TaskExecution;
+import com.yuki.reactor.core.error.ErrorCategory;
 
 import java.time.LocalDateTime;
 
 /**
  * Read model of one execution attempt (PRD 7.2). {@code result} is {@code null} while the attempt
- * is still running.
+ * is still running; {@code errorCategory} classifies a failure (PRD 5.4).
  */
 public record TaskExecutionView(
         long id,
@@ -19,6 +20,7 @@ public record TaskExecutionView(
         LocalDateTime finishedAt,
         ExecutionResult result,
         String errorCode,
+        ErrorCategory errorCategory,
         String errorMessage) {
 
     public static TaskExecutionView from(TaskExecution execution) {
@@ -32,6 +34,7 @@ public record TaskExecutionView(
                 execution.getFinishedAt(),
                 execution.getResult(),
                 execution.getErrorCode(),
+                execution.getErrorCategory(),
                 execution.getErrorMessage());
     }
 }

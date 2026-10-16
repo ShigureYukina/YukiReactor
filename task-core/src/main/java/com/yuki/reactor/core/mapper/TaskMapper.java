@@ -21,12 +21,13 @@ import java.util.List;
 public interface TaskMapper extends BaseMapper<Task> {
 
     /**
-     * Candidate tasks ordered by priority and eligibility time. Claiming still decides who wins.
+     * Candidate tasks ordered by priority and eligibility time. Both fresh tasks and tasks whose
+     * backoff has elapsed are eligible; claiming still decides who wins.
      */
     @Select("""
             SELECT *
               FROM task
-             WHERE status = 'PENDING'
+             WHERE status IN ('PENDING', 'RETRY_WAIT')
                AND next_run_at <= #{now}
              ORDER BY priority ASC, next_run_at ASC, id ASC
              LIMIT #{limit}
@@ -34,7 +35,7 @@ public interface TaskMapper extends BaseMapper<Task> {
     List<Task> findClaimable(@Param("now") LocalDateTime now, @Param("limit") int limit);
 
     /**
-     * Atomically takes ownership of a pending task: the fencing token and attempt counter advance
+     * Atomically takes ownership of an eligible task: the fencing token and attempt counter advance
      * in the same statement that flips the status.
      *
      * @return 1 when this caller won the task, 0 when it was claimed or cancelled elsewhere
@@ -48,7 +49,7 @@ public interface TaskMapper extends BaseMapper<Task> {
                    attempt_count = attempt_count + 1,
                    updated_at = #{now}
              WHERE id = #{taskId}
-               AND status = 'PENDING'
+               AND status IN ('PENDING', 'RETRY_WAIT')
                AND next_run_at <= #{now}
             """)
     int claim(@Param("taskId") long taskId,
@@ -168,4 +169,113 @@ public interface TaskMapper extends BaseMapper<Task> {
                         @Param("to") LocalDateTime to,
                         @Param("limit") int limit,
                         @Param("offset") long offset);
+
+    /**
+     * Reads a task only if it is still owned by the given attempt. Used to decide what to do with a
+     * reported result without acting on a row the caller no longer owns.
+     */
+    @Select("""
+            SELECT *
+              FROM task
+             WHERE id = #{taskId}
+               AND status = 'RUNNING'
+               AND fencing_token = #{fencingToken}
+            """)
+    Task findOwned(@Param("taskId") long taskId, @Param("fencingToken") long fencingToken);
+
+    /**
+     * Sends a task back to {@code RETRY_WAIT} after a retryable failure (PRD 4.2).
+     */
+    @Update("""
+            UPDATE task
+               SET status = 'RETRY_WAIT',
+                   next_run_at = #{nextRunAt},
+                   last_error = #{error},
+                   lease_owner = NULL,
+                   lease_until = NULL,
+                   updated_at = #{now}
+             WHERE id = #{taskId}
+               AND status = 'RUNNING'
+               AND fencing_token = #{fencingToken}
+            """)
+    int markRetryWait(@Param("taskId") long taskId,
+                      @Param("fencingToken") long fencingToken,
+                      @Param("nextRunAt") LocalDateTime nextRunAt,
+                      @Param("error") String error,
+                      @Param("now") LocalDateTime now);
+
+    /**
+     * Extends the lease of a running attempt. Only the current owner can renew.
+     *
+     * @return 1 while the attempt still owns the task, 0 once it has been reclaimed or finished
+     */
+    @Update("""
+            UPDATE task
+               SET lease_until = #{leaseUntil},
+                   updated_at = #{now}
+             WHERE id = #{taskId}
+               AND status = 'RUNNING'
+               AND fencing_token = #{fencingToken}
+            """)
+    int renewLease(@Param("taskId") long taskId,
+                   @Param("fencingToken") long fencingToken,
+                   @Param("leaseUntil") LocalDateTime leaseUntil,
+                   @Param("now") LocalDateTime now);
+
+    /**
+     * Running attempts whose lease has run out: candidates for recovery (PRD 5.3).
+     */
+    @Select("""
+            SELECT *
+              FROM task
+             WHERE status = 'RUNNING'
+               AND lease_until IS NOT NULL
+               AND lease_until <= #{now}
+             ORDER BY lease_until ASC, id ASC
+             LIMIT #{limit}
+            """)
+    List<Task> findExpiredLeases(@Param("now") LocalDateTime now, @Param("limit") int limit);
+
+    /**
+     * Reclaims an expired attempt into {@code RETRY_WAIT}. The lease is checked again in the
+     * {@code WHERE} clause so the decision only holds if the attempt really is abandoned.
+     */
+    @Update("""
+            UPDATE task
+               SET status = 'RETRY_WAIT',
+                   next_run_at = #{nextRunAt},
+                   last_error = #{error},
+                   lease_owner = NULL,
+                   lease_until = NULL,
+                   updated_at = #{now}
+             WHERE id = #{taskId}
+               AND status = 'RUNNING'
+               AND fencing_token = #{fencingToken}
+               AND lease_until <= #{now}
+            """)
+    int markLeaseExpiredForRetry(@Param("taskId") long taskId,
+                                 @Param("fencingToken") long fencingToken,
+                                 @Param("nextRunAt") LocalDateTime nextRunAt,
+                                 @Param("error") String error,
+                                 @Param("now") LocalDateTime now);
+
+    /**
+     * Reclaims an expired attempt that has no attempt budget left: it can only end as failed.
+     */
+    @Update("""
+            UPDATE task
+               SET status = 'FAILED',
+                   last_error = #{error},
+                   lease_owner = NULL,
+                   lease_until = NULL,
+                   updated_at = #{now}
+             WHERE id = #{taskId}
+               AND status = 'RUNNING'
+               AND fencing_token = #{fencingToken}
+               AND lease_until <= #{now}
+            """)
+    int markLeaseExpiredAsFailed(@Param("taskId") long taskId,
+                                 @Param("fencingToken") long fencingToken,
+                                 @Param("error") String error,
+                                 @Param("now") LocalDateTime now);
 }

@@ -3,6 +3,7 @@ package com.yuki.reactor.core.domain;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.yuki.reactor.core.error.ErrorCategory;
 import lombok.Data;
 
 import java.time.LocalDateTime;
@@ -35,6 +36,8 @@ public class TaskExecution {
     private ExecutionResult result;
 
     private String errorCode;
+
+    private ErrorCategory errorCategory;
 
     private String errorMessage;
 }

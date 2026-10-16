@@ -3,6 +3,7 @@ package com.yuki.reactor.core.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.yuki.reactor.core.domain.ExecutionResult;
 import com.yuki.reactor.core.domain.TaskExecution;
+import com.yuki.reactor.core.error.ErrorCategory;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
@@ -19,9 +20,9 @@ import java.util.List;
 public interface TaskExecutionMapper extends BaseMapper<TaskExecution> {
 
     /**
-     * Records the reported outcome of an open attempt. The {@code finished_at IS NULL} guard makes
-     * the first reported outcome final, so a second report against the same attempt cannot rewrite
-     * its history.
+     * Records the reported outcome of an open attempt, including how the failure was classified.
+     * The {@code finished_at IS NULL} guard makes the first reported outcome final, so a second
+     * report against the same attempt cannot rewrite its history.
      *
      * @return 1 when the outcome was accepted, 0 when the attempt had already reported
      */
@@ -29,6 +30,7 @@ public interface TaskExecutionMapper extends BaseMapper<TaskExecution> {
             UPDATE task_execution
                SET result = #{result},
                    error_code = #{errorCode},
+                   error_category = #{errorCategory},
                    error_message = #{errorMessage},
                    finished_at = #{finishedAt}
              WHERE id = #{id}
@@ -37,6 +39,7 @@ public interface TaskExecutionMapper extends BaseMapper<TaskExecution> {
     int finish(@Param("id") long id,
                @Param("result") ExecutionResult result,
                @Param("errorCode") String errorCode,
+               @Param("errorCategory") ErrorCategory errorCategory,
                @Param("errorMessage") String errorMessage,
                @Param("finishedAt") LocalDateTime finishedAt);
 
@@ -47,4 +50,34 @@ public interface TaskExecutionMapper extends BaseMapper<TaskExecution> {
              ORDER BY id ASC
             """)
     List<TaskExecution> findByTaskId(@Param("taskId") long taskId);
+
+    /**
+     * Attempts of a task that never reported a result.
+     */
+    @Select("""
+            SELECT *
+              FROM task_execution
+             WHERE task_id = #{taskId}
+               AND finished_at IS NULL
+             ORDER BY id ASC
+            """)
+    List<TaskExecution> findOpenByTaskId(@Param("taskId") long taskId);
+
+    /**
+     * Open attempts whose task has moved on: its status is no longer {@code RUNNING}, or the task is
+     * running under a newer fencing token, or it belongs to no task at all. Such rows can only be
+     * left behind when writing the result failed, and are closed by the consistency sweep (PRD 5.4).
+     */
+    @Select("""
+            SELECT e.*
+              FROM task_execution e
+              LEFT JOIN task t ON t.id = e.task_id
+             WHERE e.finished_at IS NULL
+               AND (t.id IS NULL
+                    OR t.status <> 'RUNNING'
+                    OR t.fencing_token <> e.fencing_token)
+             ORDER BY e.id ASC
+             LIMIT #{limit}
+            """)
+    List<TaskExecution> findOrphanOpenExecutions(@Param("limit") int limit);
 }

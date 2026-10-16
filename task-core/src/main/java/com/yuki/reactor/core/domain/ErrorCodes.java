@@ -21,6 +21,21 @@ public final class ErrorCodes {
     /** Administrative replay of a failed task. */
     public static final String REPLAYED_BY_OPERATOR = "REPLAYED_BY_OPERATOR";
 
+    /** The attempt was stopped because it exceeded {@code task.timeout_ms}. */
+    public static final String EXECUTION_TIMEOUT = "EXECUTION_TIMEOUT";
+
+    /** The lease of a running attempt expired and the task was taken back by recovery. */
+    public static final String LEASE_EXPIRED = "LEASE_EXPIRED";
+
+    /** A running attempt could not extend its lease and therefore lost ownership. */
+    public static final String LEASE_RENEWAL_FAILED = "LEASE_RENEWAL_FAILED";
+
+    /** A retryable failure could not be retried because {@code max_attempts} was reached. */
+    public static final String MAX_RETRIES_EXCEEDED = "MAX_RETRIES_EXCEEDED";
+
+    /** An execution record was still open although the task had already moved on. */
+    public static final String ORPHANED_EXECUTION = "ORPHANED_EXECUTION";
+
     private ErrorCodes() {
     }
 }

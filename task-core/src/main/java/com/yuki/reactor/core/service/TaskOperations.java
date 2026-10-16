@@ -4,9 +4,12 @@ import com.yuki.reactor.core.domain.ErrorCodes;
 import com.yuki.reactor.core.domain.ExecutionResult;
 import com.yuki.reactor.core.domain.Task;
 import com.yuki.reactor.core.domain.TaskExecution;
+import com.yuki.reactor.core.error.ErrorCategory;
+import com.yuki.reactor.core.error.TaskFailure;
 import com.yuki.reactor.core.exception.TaskNotFoundException;
 import com.yuki.reactor.core.mapper.TaskExecutionMapper;
 import com.yuki.reactor.core.mapper.TaskMapper;
+import com.yuki.reactor.core.retry.RetryPolicy;
 import com.yuki.reactor.core.support.Messages;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,11 +21,15 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * Worker facing task operations: claiming work and reporting results.
+ * Worker facing task operations: claiming work, renewing leases and reporting results.
  *
  * <p>Claiming and result reporting are transactional, and both are guarded by conditional updates
  * carrying the fencing token. A result that belongs to an attempt that no longer owns the task is
  * recorded as {@link ExecutionResult#ABANDONED} and never overwrites task state (PRD 8.1).
+ *
+ * <p>Failure handling follows PRD 5.4: retryable categories are rescheduled with exponential
+ * backoff while attempt budget remains, everything else - and any failure that used the last
+ * attempt - moves the task to its terminal {@code FAILED} state.
  */
 @Service
 public class TaskOperations {
@@ -31,10 +38,12 @@ public class TaskOperations {
 
     private final TaskMapper taskMapper;
     private final TaskExecutionMapper executionMapper;
+    private final RetryPolicy retryPolicy;
 
-    public TaskOperations(TaskMapper taskMapper, TaskExecutionMapper executionMapper) {
+    public TaskOperations(TaskMapper taskMapper, TaskExecutionMapper executionMapper, RetryPolicy retryPolicy) {
         this.taskMapper = taskMapper;
         this.executionMapper = executionMapper;
+        this.retryPolicy = retryPolicy;
     }
 
     /** Candidate tasks a worker may attempt to claim, best first. */
@@ -91,7 +100,7 @@ public class TaskOperations {
     public boolean complete(long taskId, long executionId, long fencingToken, LocalDateTime now) {
         int updated = taskMapper.markSucceeded(taskId, fencingToken, now);
         if (updated == 1) {
-            executionMapper.finish(executionId, ExecutionResult.SUCCEEDED, null, null, now);
+            executionMapper.finish(executionId, ExecutionResult.SUCCEEDED, null, null, null, now);
             return true;
         }
         rejectStale(taskId, executionId, fencingToken, now);
@@ -99,21 +108,63 @@ public class TaskOperations {
     }
 
     /**
-     * Reports a failed attempt. In V1.0 phase 1 there is no retry classification yet, so a failure is
-     * terminal; retry scheduling arrives in phase 2.
+     * Reports a failed attempt and decides what happens next.
+     *
+     * <p>Retryable failures with attempt budget left go back to {@code RETRY_WAIT} with a backoff
+     * delay; non-retryable failures and exhausted attempt budgets end in {@code FAILED} with the
+     * {@code MAX_RETRIES_EXCEEDED} code.
      *
      * @return {@code true} when the task state was written, {@code false} when the result was rejected
      */
     @Transactional
-    public boolean fail(long taskId, long executionId, long fencingToken, String errorCode, String message, LocalDateTime now) {
-        String safeMessage = Messages.truncate(message, Messages.MAX_ERROR_LENGTH);
-        int updated = taskMapper.markFailed(taskId, fencingToken, safeMessage, now);
-        if (updated == 1) {
-            executionMapper.finish(executionId, ExecutionResult.FAILED, errorCode, safeMessage, now);
-            return true;
+    public boolean fail(long taskId, long executionId, long fencingToken, TaskFailure failure, LocalDateTime now) {
+        Task owned = taskMapper.findOwned(taskId, fencingToken);
+        if (owned == null) {
+            rejectStale(taskId, executionId, fencingToken, now);
+            return false;
         }
+
+        int attempts = owned.getAttemptCount();
+        int maxAttempts = owned.getMaxAttempts();
+        boolean exhausted = attempts >= maxAttempts;
+        String code = failure.code();
+        String message = Messages.truncate(failure.message(), Messages.MAX_ERROR_LENGTH);
+
+        if (failure.retryable() && !exhausted) {
+            LocalDateTime nextRunAt = retryPolicy.nextRunAt(now, attempts, failure.retryAfterHint());
+            String error = Messages.describe(code, failure.category(), message);
+            if (taskMapper.markRetryWait(taskId, fencingToken, nextRunAt, error, now) == 1) {
+                executionMapper.finish(executionId, ExecutionResult.FAILED, code, failure.category(), message, now);
+                log.debug("task {} failed as {} and is retried at {}", taskId, failure.category(), nextRunAt);
+                return true;
+            }
+        } else {
+            if (exhausted) {
+                code = ErrorCodes.MAX_RETRIES_EXCEEDED;
+                message = Messages.truncate(
+                        message + " (max attempts reached: " + attempts + "/" + maxAttempts + ")",
+                        Messages.MAX_ERROR_LENGTH);
+            }
+            String error = Messages.describe(code, failure.category(), message);
+            if (taskMapper.markFailed(taskId, fencingToken, error, now) == 1) {
+                executionMapper.finish(executionId, ExecutionResult.FAILED, code, failure.category(), message, now);
+                log.debug("task {} failed terminally as {} ({})", taskId, failure.category(), code);
+                return true;
+            }
+        }
+
         rejectStale(taskId, executionId, fencingToken, now);
         return false;
+    }
+
+    /**
+     * Extends the lease of a running attempt (PRD 5.3).
+     *
+     * @return {@code false} when the attempt no longer owns the task, which tells the worker to stop
+     *         working on it
+     */
+    public boolean renewLease(long taskId, long fencingToken, Duration leaseTtl, LocalDateTime now) {
+        return taskMapper.renewLease(taskId, fencingToken, now.plus(leaseTtl), now) == 1;
     }
 
     private void rejectStale(long taskId, long executionId, long fencingToken, LocalDateTime now) {
@@ -122,6 +173,7 @@ public class TaskOperations {
         executionMapper.finish(executionId,
                 ExecutionResult.ABANDONED,
                 ErrorCodes.STALE_WRITER,
+                ErrorCategory.EXECUTOR_LOST,
                 "task is no longer owned by attempt with fencing token " + fencingToken,
                 now);
     }
