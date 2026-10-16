@@ -168,9 +168,11 @@ $env:JAVA_HOME="$env:USERPROFILE\.jdks\jdk-21.0.12.1+1"
 - 集成测试（`app`，**Testcontainers + MySQL 8，不使用 H2**）：执行成功/失败流程、16 线程并发幂等提交、4 个竞争者的"恰好领取一次"、过期 fencing token 被拒、取消与重放语义、REST 契约。
 - 集成测试需要 Docker 可用。
 
-### 无法直连 Docker Hub 时
+### 访问 Docker Hub
 
-Testcontainers 需要 `testcontainers/ryuk` 与 `mysql:8.4`。若所在网络无法访问 `registry-1.docker.io`，可先通过镜像站把镜像拉到本地并打上标准标签：
+Testcontainers 需要 `testcontainers/ryuk` 与 `mysql:8.4`。本机 `registry-1.docker.io` 直连超时，已在 Docker Desktop 配置手动代理 `http://127.0.0.1:7890`（`%APPDATA%\Docker\settings-store.json` 中的 `ProxyHTTPMode=manual` 与 `OverrideProxyHTTP/OverrideProxyHTTPS`），两个镜像均可正常拉取。改动代理设置后需要重启 Docker Desktop 才生效：`docker desktop restart`。
+
+代理未运行时可回退镜像站：
 
 ```powershell
 docker pull docker.m.daocloud.io/testcontainers/ryuk:0.12.0
@@ -179,7 +181,7 @@ docker tag  docker.m.daocloud.io/testcontainers/ryuk:0.12.0 testcontainers/ryuk:
 docker tag  docker.m.daocloud.io/library/mysql:8.4 mysql:8.4
 ```
 
-镜像已经存在于本地时 Testcontainers 不会重新拉取。也可以在运行测试前设置 `TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX=docker.m.daocloud.io/`，让 Testcontainers 通过镜像站拉取。
+也可以设 `TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX=docker.m.daocloud.io/` 让 Testcontainers 直接走镜像站。镜像与网络细节只影响本机运行，不写入项目配置和测试代码。
 
 ## 文档
 
