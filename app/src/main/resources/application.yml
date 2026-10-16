@@ -33,6 +33,26 @@ reactor:
     poll-interval: 500ms
     batch-size: 10
     lease-ttl: 60s
+    # Lease renewal defaults to lease-ttl / 3 (here 20s); set it explicitly when you want a
+    # different heartbeat. It must stay below lease-ttl, otherwise the task would be reclaimed
+    # while it is still running.
+    lease-renew-interval: 20s
+    # Optional per task-type concurrency cap, e.g.
+    # task-type-limits:
+    #   report: 2
+  retry:
+    base-delay: 1s
+    multiplier: 2.0
+    max-delay: 5m
+    jitter: 0.2
+    # Upper bound of retry dispatches per second, so a wave of failures cannot crowd out the
+    # normal tasks (PRD 5.4). Set to 0 to disable the limit.
+    max-dispatches-per-second: 20
+  recovery:
+    enabled: true
+    scan-interval: 5s
+    batch-size: 50
+    orphan-sweep-enabled: true
 
 logging:
   level:

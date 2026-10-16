@@ -22,6 +22,7 @@
         <module>task-core</module>
         <module>task-api</module>
         <module>task-worker</module>
+        <module>task-recovery</module>
         <module>app</module>
     </modules>
 
@@ -50,6 +51,11 @@
             <dependency>
                 <groupId>com.yuki</groupId>
                 <artifactId>reactor-task-worker</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.yuki</groupId>
+                <artifactId>reactor-task-recovery</artifactId>
                 <version>${project.version}</version>
             </dependency>
         </dependencies>

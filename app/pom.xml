@@ -27,6 +27,10 @@
             <groupId>com.yuki</groupId>
             <artifactId>reactor-task-worker</artifactId>
         </dependency>
+        <dependency>
+            <groupId>com.yuki</groupId>
+            <artifactId>reactor-task-recovery</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>com.mysql</groupId>
