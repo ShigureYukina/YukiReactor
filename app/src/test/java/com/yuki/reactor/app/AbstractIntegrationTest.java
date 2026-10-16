@@ -1,6 +1,7 @@
 package com.yuki.reactor.app;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yuki.reactor.core.concurrency.ConcurrencyLimit;
 import com.yuki.reactor.core.domain.TaskStatus;
 import com.yuki.reactor.core.dto.TaskExecutionView;
 import com.yuki.reactor.core.dto.TaskView;
@@ -10,6 +11,7 @@ import com.yuki.reactor.core.service.SubmitTaskCommand;
 import com.yuki.reactor.core.service.TaskOperations;
 import com.yuki.reactor.core.service.TaskService;
 import com.yuki.reactor.core.service.TaskSubmission;
+import com.yuki.reactor.core.signals.RuntimeSignals;
 import com.yuki.reactor.recovery.LeaseRecoveryScanner;
 import com.yuki.reactor.recovery.LeaseRecoveryService;
 import com.yuki.reactor.recovery.RecoveryProperties;
@@ -79,6 +81,9 @@ public abstract class AbstractIntegrationTest {
     @Autowired
     protected LeaseRecoveryService leaseRecoveryService;
 
+    @Autowired
+    protected RuntimeSignals runtimeSignals;
+
     private final List<TaskWorkerEngine> startedWorkers = new ArrayList<>();
 
     private final List<LeaseRecoveryScanner> startedScanners = new ArrayList<>();
@@ -87,6 +92,7 @@ public abstract class AbstractIntegrationTest {
     void resetTaskTables() {
         jdbcTemplate.execute("DELETE FROM task_execution");
         jdbcTemplate.execute("DELETE FROM task");
+        jdbcTemplate.execute("DELETE FROM scheduler_decision");
     }
 
     @AfterEach
@@ -132,8 +138,18 @@ public abstract class AbstractIntegrationTest {
     }
 
     protected TaskWorkerEngine startWorker(TaskWorkerProperties properties, RetryProperties retry) {
-        TaskWorkerEngine engine = new TaskWorkerEngine(
-                taskOperations, taskHandlerRegistry, properties, retry, objectMapper, clock);
+        return startWorker(properties, retry, null);
+    }
+
+    /**
+     * Starts a worker with an explicit concurrency limit. When {@code limit} is null the worker
+     * keeps its own fixed limit and records its observations in its private signal window; tests
+     * that want the controller to see those observations pass the shared {@link #runtimeSignals}.
+     */
+    protected TaskWorkerEngine startWorker(TaskWorkerProperties properties, RetryProperties retry,
+                                           ConcurrencyLimit limit) {
+        TaskWorkerEngine engine = new TaskWorkerEngine(taskOperations, taskHandlerRegistry, properties,
+                retry, runtimeSignals, limit, objectMapper, clock, null);
         engine.start();
         startedWorkers.add(engine);
         return engine;
