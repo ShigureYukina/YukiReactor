@@ -1,0 +1,39 @@
+spring:
+  application:
+    name: reactor
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:reactor}?connectionTimeZone=UTC&characterEncoding=UTF-8
+    username: ${MYSQL_USER:reactor}
+    password: ${MYSQL_PASSWORD:reactor123}
+    hikari:
+      maximum-pool-size: 16
+      pool-name: reactor-pool
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  threads:
+    virtual:
+      enabled: false
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    # Enums are stored as their name (PENDING, SUCCEEDED, ...) so rows stay readable in SQL.
+    default-enum-type-handler: org.apache.ibatis.type.EnumTypeHandler
+  global-config:
+    banner: false
+
+server:
+  port: 8080
+
+reactor:
+  worker:
+    enabled: true
+    concurrency: 4
+    poll-interval: 500ms
+    batch-size: 10
+    lease-ttl: 60s
+
+logging:
+  level:
+    com.yuki.reactor: INFO
