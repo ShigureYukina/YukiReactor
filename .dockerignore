@@ -1,0 +1,9 @@
+# Build output and local evidence - none of this belongs inside the image.
+target/
+*.log
+docs/reports/
+
+# VCS and IDE state.
+.git/
+.idea/
+*.iml

@@ -66,6 +66,8 @@ $env:JAVA_HOME="$env:USERPROFILE\.jdks\jdk-21.0.12.1+1"
 .\mvnw.cmd -pl app -am spring-boot:run
 ```
 
+也可以用 Docker Compose 把应用与数据库一起部署（无需本机 JDK/Maven）：见下面「部署（Docker Compose）」一节。
+
 提交一个任务并观察执行结果：
 
 ```powershell
@@ -80,6 +82,32 @@ curl.exe -s http://localhost:8080/api/v1/tasks/1
 # 查看每次执行的记录
 curl.exe -s http://localhost:8080/api/v1/tasks/1/executions
 ```
+
+## 部署（Docker Compose）
+
+一键部署应用与 MySQL。镜像内完成编译（测试仍在本机跑，见「测试」一节），Flyway 在容器启动时自动执行 V1–V5 迁移：
+
+```powershell
+docker compose up -d --build
+```
+
+- `Dockerfile`（仓库根）：`maven:3.9-eclipse-temurin-21` 构建 `app` fat jar，`eclipse-temurin:21-jre` 运行；构建上下文为整仓，`target/`、`*.log` 与 `docs/reports/` 被 `.dockerignore` 排除。
+- `docker-compose.yml`：`app` 等服务 MySQL 健康检查通过后启动，映射 8080；数据落在命名卷 `mysql-data`。
+- 管理端点密码经环境变量注入：`$env:REACTOR_ADMIN_PASSWORD="..."; docker compose up -d --build`（缺省 `reactor-dev` 仅本机开发可用）。
+
+冒烟验证（真实容器，非模拟）：
+
+```powershell
+curl.exe -s http://localhost:8080/api/v1/tasks                                    # 200，读取接口匿名开放
+curl.exe -s -X POST http://localhost:8080/api/v1/tasks -H "Content-Type: application/json" `
+  -d '{"taskType":"echo","payload":{"sleepMs":50},"idempotencyScope":"smoke","idempotencyKey":"1"}'   # 201，容器内 worker 执行到 SUCCEEDED
+curl.exe -s -X POST http://localhost:8080/api/v1/tasks/1/cancel -H "Content-Type: application/json" `
+  -d '{"operator":"smoke","reason":"demo"}'                                        # 401 UNAUTHORIZED
+curl.exe -s -u admin:reactor-dev -X POST http://localhost:8080/api/v1/tasks/1/cancel -H "Content-Type: application/json" `
+  -d '{"operator":"smoke","reason":"demo"}'                                        # 200 CANCELLED
+```
+
+清理：`docker compose rm -sf app` 只移除应用容器；`docker compose down` 移除全部容器但保留数据卷（加 `-v` 才删数据）。
 
 ## REST API
 

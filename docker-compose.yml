@@ -22,5 +22,31 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
 
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: reactor-app
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: reactor
+      MYSQL_USER: reactor
+      MYSQL_PASSWORD: reactor123
+      # Only a local development default; override it for anything beyond this machine.
+      REACTOR_ADMIN_PASSWORD: ${REACTOR_ADMIN_PASSWORD:-reactor-dev}
+    ports:
+      - "8080:8080"
+    healthcheck:
+      # TCP connect check: the JRE base image ships no curl/wget.
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8080' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
 volumes:
   mysql-data:
