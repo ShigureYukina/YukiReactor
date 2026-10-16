@@ -2,8 +2,10 @@ package com.yuki.reactor.worker;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yuki.reactor.core.concurrency.ConcurrencyLimit;
 import com.yuki.reactor.core.domain.Task;
 import com.yuki.reactor.core.domain.TaskStatus;
+import com.yuki.reactor.core.error.ErrorCategory;
 import com.yuki.reactor.core.error.TaskFailure;
 import com.yuki.reactor.core.handler.TaskContext;
 import com.yuki.reactor.core.handler.TaskHandler;
@@ -12,6 +14,7 @@ import com.yuki.reactor.core.retry.RetryAdmissionLimiter;
 import com.yuki.reactor.core.retry.RetryProperties;
 import com.yuki.reactor.core.service.TaskClaim;
 import com.yuki.reactor.core.service.TaskOperations;
+import com.yuki.reactor.core.signals.RuntimeSignals;
 import com.yuki.reactor.core.support.Messages;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -50,6 +53,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * exceeds the timeout of the task. A handler that does not react to interruption keeps its worker
  * thread busy; the attempt is still reported as timed out, and its late result is rejected by the
  * fencing token check instead of overwriting the state produced by the next attempt.
+ *
+ * <p>How many attempts may run at once is read from a {@link ConcurrencyLimit} on every polling
+ * round, so an adaptive controller can lower or raise it without restarting the worker.
  */
 public class TaskWorkerEngine implements SmartLifecycle {
 
@@ -65,6 +71,14 @@ public class TaskWorkerEngine implements SmartLifecycle {
     private final Clock clock;
     private final String workerId;
     private final RetryAdmissionLimiter retryAdmission;
+    private final RuntimeSignals signals;
+    /**
+     * How many tasks this worker may run at the same time. It lives outside the engine so an
+     * adaptive controller in the same process can move it while the worker keeps polling; the
+     * engine reads it every round, so a lower limit only affects the next dispatch and never
+     * interrupts an attempt that is already running.
+     */
+    private final ConcurrencyLimit limit;
 
     private final AtomicInteger inFlight = new AtomicInteger();
     private final Map<Long, InFlightAttempt> inFlightAttempts = new ConcurrentHashMap<>();
@@ -81,7 +95,7 @@ public class TaskWorkerEngine implements SmartLifecycle {
                             RetryProperties retryProperties,
                             ObjectMapper objectMapper,
                             Clock clock) {
-        this(taskOperations, handlerRegistry, properties, retryProperties, objectMapper, clock, null);
+        this(taskOperations, handlerRegistry, properties, retryProperties, new RuntimeSignals(), null, objectMapper, clock, null);
     }
 
     public TaskWorkerEngine(TaskOperations taskOperations,
@@ -91,12 +105,32 @@ public class TaskWorkerEngine implements SmartLifecycle {
                             ObjectMapper objectMapper,
                             Clock clock,
                             String workerIdOverride) {
+        this(taskOperations, handlerRegistry, properties, retryProperties, new RuntimeSignals(), null, objectMapper, clock, workerIdOverride);
+    }
+
+    /**
+     * @param signals            observation window the adaptive controller reads; never {@code null}
+     * @param limitOverride      shared concurrency limit, or {@code null} for a fixed limit taken from
+     *                           {@code reactor.worker.concurrency}
+     * @param workerIdOverride   explicit worker id, or {@code null} to derive one from the host
+     */
+    public TaskWorkerEngine(TaskOperations taskOperations,
+                            TaskHandlerRegistry handlerRegistry,
+                            TaskWorkerProperties properties,
+                            RetryProperties retryProperties,
+                            RuntimeSignals signals,
+                            ConcurrencyLimit limitOverride,
+                            ObjectMapper objectMapper,
+                            Clock clock,
+                            String workerIdOverride) {
         this.taskOperations = taskOperations;
         this.handlerRegistry = handlerRegistry;
         this.properties = properties;
+        this.signals = signals == null ? new RuntimeSignals() : signals;
         this.objectMapper = objectMapper;
         this.clock = clock;
         validate(properties);
+        this.limit = limitOverride == null ? ConcurrencyLimit.fixed(properties.getConcurrency()) : limitOverride;
         this.workerId = resolveWorkerId(properties, workerIdOverride);
         this.retryAdmission = new RetryAdmissionLimiter(retryProperties, clock);
     }
@@ -106,7 +140,9 @@ public class TaskWorkerEngine implements SmartLifecycle {
         if (running) {
             return;
         }
-        executionPool = Executors.newFixedThreadPool(properties.getConcurrency(), threadFactory("reactor-worker"));
+        // The pool is sized for the upper bound; how many attempts actually run is decided by the
+        // concurrency limit on every poll round, so the adaptive controller can lower it at runtime.
+        executionPool = Executors.newFixedThreadPool(limit.max(), threadFactory("reactor-worker"));
         pollScheduler = Executors.newSingleThreadScheduledExecutor(threadFactory("reactor-worker-poll"));
         // One thread renews leases, one enforces execution timeouts, so a slow database round trip
         // does not delay a timeout.
@@ -116,9 +152,11 @@ public class TaskWorkerEngine implements SmartLifecycle {
         long renewMillis = Math.max(1L, properties.effectiveLeaseRenewInterval().toMillis());
         housekeepingScheduler.scheduleWithFixedDelay(this::renewLeasesQuietly, renewMillis, renewMillis, TimeUnit.MILLISECONDS);
         running = true;
-        log.info("worker {} started: concurrency={} pollInterval={} batchSize={} leaseTtl={} leaseRenewInterval={} retryAdmissionPerSecond={}",
+        log.info("worker {} started: concurrencyLimit={} (min {} max {}) pollInterval={} batchSize={} leaseTtl={} leaseRenewInterval={} retryAdmissionPerSecond={}",
                 workerId,
-                properties.getConcurrency(),
+                limit.current(),
+                limit.min(),
+                limit.max(),
                 properties.getPollInterval(),
                 properties.getBatchSize(),
                 properties.getLeaseTtl(),
@@ -169,6 +207,16 @@ public class TaskWorkerEngine implements SmartLifecycle {
         return counter == null ? 0 : counter.get();
     }
 
+    /** How many tasks this worker may run at the same time right now. */
+    public int getEffectiveConcurrency() {
+        return limit.current();
+    }
+
+    /** The concurrency limit this worker dispatches against, shared with the adaptive controller. */
+    public ConcurrencyLimit getConcurrencyLimit() {
+        return limit;
+    }
+
     /**
      * A failed polling round must never kill the scheduler, otherwise the worker would stop working
      * silently - for example while the database is briefly unavailable (PRD 5.7).
@@ -182,15 +230,16 @@ public class TaskWorkerEngine implements SmartLifecycle {
     }
 
     private void poll() {
-        int available = properties.getConcurrency() - inFlight.get();
+        int effectiveConcurrency = limit.current();
+        int available = effectiveConcurrency - inFlight.get();
         if (available <= 0) {
             return;
         }
-        int limit = Math.min(available, properties.getBatchSize());
+        int batchLimit = Math.min(available, properties.getBatchSize());
         LocalDateTime now = LocalDateTime.now(clock);
-        List<Task> candidates = taskOperations.findClaimable(now, limit);
+        List<Task> candidates = taskOperations.findClaimable(now, batchLimit);
         for (Task candidate : candidates) {
-            if (inFlight.get() >= properties.getConcurrency()) {
+            if (inFlight.get() >= effectiveConcurrency) {
                 return;
             }
             // Retries are admitted at a limited rate so a wave of failing tasks cannot take every
@@ -210,10 +259,11 @@ public class TaskWorkerEngine implements SmartLifecycle {
                 // Lost the race against another worker or an operator cancelling the task.
                 continue;
             }
+            long queueWaitMillis = queueWaitMillis(candidate, now);
             inFlight.incrementAndGet();
             incrementType(candidate.getTaskType());
             try {
-                executionPool.execute(() -> executeClaim(claim));
+                executionPool.execute(() -> executeClaim(claim, queueWaitMillis));
             } catch (RejectedExecutionException e) {
                 // The engine is shutting down. The claim stays RUNNING until its lease expires and the
                 // recovery scanner hands it to another worker.
@@ -224,38 +274,45 @@ public class TaskWorkerEngine implements SmartLifecycle {
         }
     }
 
-    private void executeClaim(TaskClaim claim) {
+    private void executeClaim(TaskClaim claim, long queueWaitMillis) {
         Task task = claim.task();
         long taskId = task.getId();
         int attempt = task.getAttemptCount();
         long executionId = claim.execution().getId();
         long fencingToken = task.getFencingToken();
+        long startedNanos = System.nanoTime();
         InFlightAttempt handle = new InFlightAttempt(taskId, executionId, fencingToken);
         handle.bindThread(Thread.currentThread());
         inFlightAttempts.put(taskId, handle);
         ScheduledFuture<?> timeoutWatchdog = scheduleTimeoutWatchdog(task, handle);
         try {
-            Exception failure = runHandler(task);
+            Exception handlerFailure = runHandler(task);
             // An interrupt that arrived after the handler returned must not leak into the reporting
             // calls below; whether it was a timeout is recorded on the handle instead.
             Thread.interrupted();
-            if (failure == null) {
+            long latencyMillis = latencyMillis(startedNanos);
+            if (handlerFailure == null) {
                 boolean applied = taskOperations.complete(taskId, executionId, fencingToken, LocalDateTime.now(clock));
                 if (!applied) {
                     log.warn("success of task {} attempt {} was rejected as stale", taskId, attempt);
                 }
+                signals.recordAttempt(latencyMillis, queueWaitMillis, null, false);
             } else if (handle.timedOut()) {
                 reportFailure(taskId, executionId, fencingToken, attempt,
                         TaskFailure.timeout(task.getTimeoutMs() == null ? 0L : task.getTimeoutMs()));
+                signals.recordAttempt(latencyMillis, queueWaitMillis, ErrorCategory.TIMEOUT, true);
             } else if (handle.leaseLost()) {
                 // Another worker owns the task now; it decides the outcome, so nothing is reported.
                 log.warn("task {} attempt {} stopped after losing its lease; its result is discarded", taskId, attempt);
+                signals.recordAttempt(latencyMillis, queueWaitMillis, ErrorCategory.EXECUTOR_LOST, false);
             } else if (!running) {
                 // Shutdown interrupted the handler: leave the execution record open and let lease
                 // expiry recovery hand the task to another worker.
                 log.info("task {} attempt {} was interrupted by shutdown; the outcome is left to lease recovery", taskId, attempt);
             } else {
-                reportFailure(taskId, executionId, fencingToken, attempt, TaskFailure.classify(failure));
+                TaskFailure failure = TaskFailure.classify(handlerFailure);
+                reportFailure(taskId, executionId, fencingToken, attempt, failure);
+                signals.recordAttempt(latencyMillis, queueWaitMillis, failure.category(), false);
             }
         } catch (Exception e) {
             // Recording the outcome failed as well; the attempt row stays open on purpose so the
@@ -300,6 +357,16 @@ public class TaskWorkerEngine implements SmartLifecycle {
             log.warn("task {} has an unreadable payload; executing with an empty payload", task.getId());
             return objectMapper.createObjectNode();
         }
+    }
+
+    /** How long the task waited between becoming due and being claimed. */
+    private static long queueWaitMillis(Task task, LocalDateTime now) {
+        LocalDateTime readyAt = task.getNextRunAt();
+        return readyAt == null ? 0L : Math.max(0L, Duration.between(readyAt, now).toMillis());
+    }
+
+    private static long latencyMillis(long startedNanos) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
     }
 
     private ScheduledFuture<?> scheduleTimeoutWatchdog(Task task, InFlightAttempt handle) {
