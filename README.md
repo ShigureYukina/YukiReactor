@@ -27,8 +27,11 @@ Reactor 关注的不是"任务能不能跑起来"，而是任务在异常条件�
 | 租约心跳续约、执行超时（协作式中断） | ✅ 第二阶段 |
 | 过期租约回收与孤儿执行记录清理（执行器崩溃后恢复） | ✅ 第二阶段 |
 | 失败分类、指数退避 + 抖动、最大重试次数、重试派发限速 | ✅ 第二阶段 |
-| 自适应并发控制（AIMD） | ❌ 第三阶段 |
-| 调度决策记录、任务时间线、监控面板 | ❌ 第四阶段 |
+| 运行时观测信号（下游延迟/错误率、超时率、队列等待） | ✅ 第三阶段 |
+| 自适应并发控制（AIMD，默认关闭） | ✅ 第三阶段 |
+| 模拟下游与运行时故障注入（延迟、错误率、失败类型、限流） | ✅ 第三阶段 |
+| 并发度调整的决策记录（`scheduler_decision`，只写） | ✅ 第三阶段 |
+| 决策查询接口、任务时间线、监控面板 | ❌ 第四阶段 |
 | 管理接口认证与鉴权 | ❌ 第五阶段 |
 
 未实现的能力不会在代码里留空壳或未使用的抽象；对应模块在各自阶段才创建。
@@ -36,14 +39,16 @@ Reactor 关注的不是"任务能不能跑起来"，而是任务在异常条件�
 ## 架构
 
 ```
-task-core     领域模型、状态机、失败分类与重试策略、MyBatis 映射、任务服务与领取/上报操作（含 Flyway 迁移）
+task-core     领域模型、状态机、失败分类与重试策略、MyBatis 映射、任务服务与领取/上报操作、共享并发度与运行时信号（含 Flyway 迁移）
 task-api      REST 接口与异常到 HTTP 语义的映射
 task-worker   领取-执行-续约-上报的执行引擎（SmartLifecycle），可多进程独立运行
 task-recovery 过期租约回收与孤儿执行记录清理（定时扫描器）
+fault-lab     可运行时配置的模拟下游与 `downstream` 任务类型（故障注入）
+adaptive-controller AIMD 并发度控制器与决策记录写入（读信号 → 调整并发度）
 app           Spring Boot 装配、配置、演示任务类型
 ```
 
-依赖方向：`task-api`、`task-worker`、`task-recovery` 依赖 `task-core`；三者互不依赖；`app` 只做装配。**MySQL 是唯一任务状态来源**，未引入 Redis / 消息队列。
+依赖方向：`task-api`、`task-worker`、`task-recovery`、`fault-lab`、`adaptive-controller` 依赖 `task-core`，业务模块之间互不依赖；`app` 只做装配。worker 与自适应控制器不直接依赖：控制器写、worker 读同一个共享并发度（`ConcurrencyLimit`），观测信号经 `RuntimeSignals` 传递。**MySQL 是唯一任务状态来源**，未引入 Redis / 消息队列。
 
 ## 快速开始
 
@@ -201,6 +206,35 @@ public class ReportTaskHandler implements TaskHandler {
 | `reactor.recovery.batch-size` | `50` | 每轮最多处理的过期租约数与孤儿执行记录数 |
 | `reactor.recovery.orphan-sweep-enabled` | `true` | 是否清理「任务已不在执行中却仍开放」的执行记录 |
 
+| 配置项 | 默认值 | 说明 |
+|---|---|---|
+| `reactor.adaptive.enabled` | `false` | 是否启用 AIMD 自适应并发控制；关闭时保持固定并发语义（`worker.concurrency` 即上限） |
+| `reactor.adaptive.min-concurrency` | `1` | 并发度下界 |
+| `reactor.adaptive.max-concurrency` | `8` | 并发度上界，同时决定线程池大小 |
+| `reactor.adaptive.initial-concurrency` | `4` | 启用时的起始并发度 |
+| `reactor.adaptive.sample-interval` | `2s` | 采样周期（采样点不写入决策表） |
+| `reactor.adaptive.latency-threshold` | `500ms` | 下游/执行延迟越过该值即视为越界 |
+| `reactor.adaptive.error-rate-threshold` | `0.3` | 可重试类错误（TRANSIENT / THROTTLED / OVERLOADED / TIMEOUT）的比例上限 |
+| `reactor.adaptive.timeout-rate-threshold` | `0.2` | 执行超时比例上限 |
+| `reactor.adaptive.increase-step` | `1` | 每次上调的步长 |
+| `reactor.adaptive.decrease-factor` | `0.5` | 下调的比例因子 |
+| `reactor.adaptive.max-decrease-step` | `4` | 单次下调的绝对幅度上限 |
+| `reactor.adaptive.cooldown` | `10s` | 两次调整之间的最短间隔 |
+| `reactor.adaptive.consecutive-breaches-before-decrease` | `2` | 连续多少次越界才下调 |
+| `reactor.adaptive.recovery-observation` | `15s` | 上调前必须持续健康的观察窗口；每次上调后重新计时 |
+| `reactor.adaptive.conservative-concurrency` | `1` | 指标缺失或不可读时的回退并发度 |
+
+| 配置项 | 默认值 | 说明 |
+|---|---|---|
+| `reactor.fault-lab.latency-ms` | `0` | 模拟下游的基础延迟 |
+| `reactor.fault-lab.jitter-ms` | `0` | 延迟抖动上限（0 表示无抖动） |
+| `reactor.fault-lab.error-rate` | `0.0` | 失败概率 |
+| `reactor.fault-lab.failure-kind` | `TRANSIENT` | 失败映射到哪一类任务错误：`TRANSIENT`、`OVERLOADED`、`THROTTLED` |
+| `reactor.fault-lab.retry-after-ms` | `2000` | `THROTTLED` 时下发给调度器的等待指示 |
+| `reactor.fault-lab.seed` | `0` | 随机种子（0 表示随机）；固定种子让故障注入可复现 |
+
+以上参数都可在运行时通过 `PUT /api/v1/fault-lab/downstream` 覆盖（必须带 `operator`，变更写日志）。Actuator 暴露 `health,metrics,info`；控制器注册的指标：`reactor.adaptive.concurrency.limit`（当前并发度，gauge）、`reactor.adaptive.concurrency.max`（上限，gauge）、`reactor.adaptive.concurrency.adjustments`（按 `reason` 标签累计的调整次数，counter）。
+
 数据库连接可用环境变量覆盖：`MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_DATABASE`、`MYSQL_USER`、`MYSQL_PASSWORD`。时间统一使用 UTC，通过注入的 `Clock` 获取。
 
 ## 测试
@@ -210,9 +244,9 @@ $env:JAVA_HOME="$env:USERPROFILE\.jdks\jdk-21.0.12.1+1"
 .\mvnw.cmd -B verify
 ```
 
-- 单元测试（`task-core`，不需要 Docker）：状态机全部合法/非法转换、任务类型注册表、退避计算（含抖动边界与上限）、重试派发限速器、失败分类。
-- 集成测试（`app`，**Testcontainers + MySQL 8，不使用 H2**）：执行成功/失败流程、16 线程并发幂等提交、多引擎竞争的"恰好领取一次"、过期 fencing token 被拒、取消与重放、REST 契约、心跳续约阻止误回收、过期租约回收后由其它实例完成、孤儿执行记录清理、退避窗口内不派发、下游 `retryAfter` 指示优先、不可重试错误立即失败、尝试次数用尽后停止重试、超时中断、按类型并发上限、重试派发限速，以及「副作用已产生但成功状态未写入」故障窗口的专项验证。
-- 集成测试需要 Docker 可用。当前规模：**task-core 33 个单元测试 + app 50 个集成测试**。
+- 单元测试（`task-core`、`adaptive-controller`，不需要 Docker）：状态机全部合法/非法转换、任务类型注册表、退避计算（含抖动边界与上限）、重试派发限速器、失败分类；共享并发度的钳制语义、观测信号滚动窗口的聚合与淘汰；AIMD 控制律（递增步长与上限钳制、连续越界才下调、单次降幅上限、下界钳制、冷却、上调前的健康观察窗口、指标缺失与计数不可读时回退保守并发度、参数校验）。
+- 集成测试（`app`，**Testcontainers + MySQL 8，不使用 H2**）：执行成功/失败流程、16 线程并发幂等提交、多引擎竞争的"恰好领取一次"、过期 fencing token 被拒、取消与重放、REST 契约、心跳续约阻止误回收、过期租约回收后由其它实例完成、孤儿执行记录清理、退避窗口内不派发、下游 `retryAfter` 指示优先、不可重试错误立即失败、尝试次数用尽后停止重试、超时中断、按类型并发上限、重试派发限速、运行中由外部改变并发度后派发被限制而不重启引擎、过载下调与恢复上调各写一条带前后值的决策记录、定时采样循环能自行完成调整、模拟下游的失败映射与 `retryAfter` 传递、控制接口的 `operator` 审计，以及「副作用已产生但成功状态未写入」故障窗口的专项验证。
+- 集成测试需要 Docker 可用。当前规模：**task-core 45 个单元测试 + adaptive-controller 11 个单元测试 + app 57 个集成测试**。
 
 ## 故障实验
 
@@ -225,6 +259,16 @@ pwsh -NoProfile -File scripts/phase-2-recovery-experiment.ps1 -SkipBuild   # 复
 ```
 
 脚本会启动两个实例（8080/8081）、跑一轮多 Worker 竞争（校验无重复领取）、再对持有长任务租约的实例执行 `Stop-Process -Force`，最后把环境、配置、注入方式、校验结果、测量值与执行记录写入 `docs/reports/phase-2/<UTC 时间戳>/raw-result.json`，实例日志同目录保存。实测结果与局限见 [`docs/reports/phase-2-recovery.md`](docs/reports/phase-2-recovery.md)。
+
+本机可复现的自适应并发调整实验（真实下游调用与真实故障注入，非模拟）：
+
+```powershell
+docker compose up -d mysql
+pwsh -NoProfile -File scripts/phase-3-adaptive-experiment.ps1              # 先构建再运行
+pwsh -NoProfile -File scripts/phase-3-adaptive-experiment.ps1 -SkipBuild   # 复用已构建的 jar
+```
+
+脚本启用自适应控制（初始并发 4、上限 8、冷却与恢复观察各 3 s）并跑四段：健康下游下把并发度升到上限 → 通过 `PUT /api/v1/fault-lab/downstream` 注入 1500 ms 延迟与 100% 失败，观察并发度降到 1 → 恢复下游并提交 100 个任务，观察并发度重新升到上限 → 关闭自适应、固定并发 4 重跑同一段过载作为对照。全程记录并发度时间线、`scheduler_decision` 决策行（原因码与调整前后值）与固定并发对照的峰值在飞任务数，写入 `docs/reports/phase-3/<UTC 时间戳>/raw-result.json`，实例日志与构建日志同目录保存。实测结果与局限见 [`docs/reports/phase-3-adaptive-control.md`](docs/reports/phase-3-adaptive-control.md)。
 
 ### 访问 Docker Hub
 
@@ -243,5 +287,7 @@ docker tag  docker.m.daocloud.io/library/mysql:8.4 mysql:8.4
 
 ## 文档
 
-- `docs/PRD.md`：产品需求与验收标准（V1.0）
+- `docs/PRD.md`：产品需求与验收标准（V1.1）
 - `AGENTS.md`：开发纪律、模块边界、测试要求与本机环境
+- [`docs/reports/phase-2-recovery.md`](docs/reports/phase-2-recovery.md)：第二阶段故障恢复实验报告
+- [`docs/reports/phase-3-adaptive-control.md`](docs/reports/phase-3-adaptive-control.md)：第三阶段自适应并发控制实验报告
