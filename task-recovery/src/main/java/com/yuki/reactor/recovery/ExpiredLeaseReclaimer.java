@@ -1,5 +1,6 @@
 package com.yuki.reactor.recovery;
 
+import com.yuki.reactor.core.decision.SchedulerDecisionRecorder;
 import com.yuki.reactor.core.domain.ErrorCodes;
 import com.yuki.reactor.core.domain.ExecutionResult;
 import com.yuki.reactor.core.domain.Task;
@@ -33,10 +34,13 @@ public class ExpiredLeaseReclaimer {
 
     private final TaskMapper taskMapper;
     private final TaskExecutionMapper executionMapper;
+    private final SchedulerDecisionRecorder decisionRecorder;
 
-    public ExpiredLeaseReclaimer(TaskMapper taskMapper, TaskExecutionMapper executionMapper) {
+    public ExpiredLeaseReclaimer(TaskMapper taskMapper, TaskExecutionMapper executionMapper,
+                                 SchedulerDecisionRecorder decisionRecorder) {
         this.taskMapper = taskMapper;
         this.executionMapper = executionMapper;
+        this.decisionRecorder = decisionRecorder;
     }
 
     /**
@@ -63,7 +67,8 @@ public class ExpiredLeaseReclaimer {
         TaskStateMachine.requireTransition(TaskStatus.RUNNING, target);
 
         String detail = "lease expired at " + task.getLeaseUntil() + " without a renewal from " + task.getLeaseOwner();
-        closeOpenExecutions(taskId, detail, now);
+        List<TaskExecution> abandoned = closeOpenExecutions(taskId, detail, now);
+        Long executionId = abandoned.isEmpty() ? null : abandoned.get(abandoned.size() - 1).getId();
 
         if (exhausted) {
             String note = Messages.describe(ErrorCodes.LEASE_EXPIRED, ErrorCategory.EXECUTOR_LOST,
@@ -71,6 +76,8 @@ public class ExpiredLeaseReclaimer {
             if (taskMapper.markLeaseExpiredAsFailed(taskId, fencingToken, note, now) != 1) {
                 return RecoveryOutcome.SKIPPED;
             }
+            decisionRecorder.recordLeaseReclaimed(taskId, executionId, task.getLeaseOwner(), task.getLeaseUntil(),
+                    now, attempts, maxAttempts, true);
             log.warn("task {} failed after lease expiry: no attempt left ({}/{})", taskId, attempts, maxAttempts);
             return RecoveryOutcome.RECLAIMED_AS_FAILED;
         }
@@ -79,6 +86,8 @@ public class ExpiredLeaseReclaimer {
         if (taskMapper.markLeaseExpiredForRetry(taskId, fencingToken, now, note, now) != 1) {
             return RecoveryOutcome.SKIPPED;
         }
+        decisionRecorder.recordLeaseReclaimed(taskId, executionId, task.getLeaseOwner(), task.getLeaseUntil(),
+                now, attempts, maxAttempts, false);
         log.warn("task {} reclaimed after lease expiry (attempt {}/{}), waiting for the next claim",
                 taskId, attempts, maxAttempts);
         return RecoveryOutcome.RECLAIMED_FOR_RETRY;
@@ -100,12 +109,13 @@ public class ExpiredLeaseReclaimer {
         return true;
     }
 
-    private void closeOpenExecutions(long taskId, String detail, LocalDateTime now) {
+    private List<TaskExecution> closeOpenExecutions(long taskId, String detail, LocalDateTime now) {
         List<TaskExecution> open = executionMapper.findOpenByTaskId(taskId);
         String message = Messages.describe(ErrorCategory.EXECUTOR_LOST, detail);
         for (TaskExecution execution : open) {
             executionMapper.finish(execution.getId(), ExecutionResult.ABANDONED, ErrorCodes.LEASE_EXPIRED,
                     ErrorCategory.EXECUTOR_LOST, message, now);
         }
+        return open;
     }
 }
