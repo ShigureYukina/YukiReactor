@@ -3,6 +3,8 @@ package com.yuki.reactor.worker;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yuki.reactor.core.concurrency.ConcurrencyLimit;
+import com.yuki.reactor.core.decision.SchedulerDecisionRecorder;
+import com.yuki.reactor.core.domain.ReasonCodes;
 import com.yuki.reactor.core.domain.Task;
 import com.yuki.reactor.core.domain.TaskStatus;
 import com.yuki.reactor.core.error.ErrorCategory;
@@ -80,6 +82,12 @@ public class TaskWorkerEngine implements SmartLifecycle {
      */
     private final ConcurrencyLimit limit;
 
+    /**
+     * Writes why a due task was left unclaimed (PRD 5.6). {@code null} in the legacy constructors,
+     * which keeps the engine usable without the decision tables.
+     */
+    private final SchedulerDecisionRecorder decisionRecorder;
+
     private final AtomicInteger inFlight = new AtomicInteger();
     private final Map<Long, InFlightAttempt> inFlightAttempts = new ConcurrentHashMap<>();
     private final Map<String, AtomicInteger> inFlightByType = new ConcurrentHashMap<>();
@@ -123,6 +131,24 @@ public class TaskWorkerEngine implements SmartLifecycle {
                             ObjectMapper objectMapper,
                             Clock clock,
                             String workerIdOverride) {
+        this(taskOperations, handlerRegistry, properties, retryProperties, signals, limitOverride,
+                objectMapper, clock, workerIdOverride, null);
+    }
+
+    /**
+     * @param decisionRecorder   writes the decisions that explain a deferred task (PRD 5.6), or
+     *                           {@code null} to dispatch without recording them
+     */
+    public TaskWorkerEngine(TaskOperations taskOperations,
+                            TaskHandlerRegistry handlerRegistry,
+                            TaskWorkerProperties properties,
+                            RetryProperties retryProperties,
+                            RuntimeSignals signals,
+                            ConcurrencyLimit limitOverride,
+                            ObjectMapper objectMapper,
+                            Clock clock,
+                            String workerIdOverride,
+                            SchedulerDecisionRecorder decisionRecorder) {
         this.taskOperations = taskOperations;
         this.handlerRegistry = handlerRegistry;
         this.properties = properties;
@@ -133,6 +159,7 @@ public class TaskWorkerEngine implements SmartLifecycle {
         this.limit = limitOverride == null ? ConcurrencyLimit.fixed(properties.getConcurrency()) : limitOverride;
         this.workerId = resolveWorkerId(properties, workerIdOverride);
         this.retryAdmission = new RetryAdmissionLimiter(retryProperties, clock);
+        this.decisionRecorder = decisionRecorder;
     }
 
     @Override
@@ -232,14 +259,24 @@ public class TaskWorkerEngine implements SmartLifecycle {
     private void poll() {
         int effectiveConcurrency = limit.current();
         int available = effectiveConcurrency - inFlight.get();
+        LocalDateTime now = LocalDateTime.now(clock);
         if (available <= 0) {
+            // Every slot is busy. Name the task that is waiting instead of ending the round without an
+            // explanation of why it did not run (PRD 5.6).
+            recordHeadDeferral(ReasonCodes.CAPACITY_LIMIT,
+                    "concurrency limit of " + effectiveConcurrency + " is fully used by running attempts", now);
             return;
         }
         int batchLimit = Math.min(available, properties.getBatchSize());
-        LocalDateTime now = LocalDateTime.now(clock);
         List<Task> candidates = taskOperations.findClaimable(now, batchLimit);
+        int dispatched = 0;
         for (Task candidate : candidates) {
-            if (inFlight.get() >= effectiveConcurrency) {
+            int currentLimit = limit.current();
+            if (inFlight.get() >= currentLimit) {
+                // The limit was lowered while this round was dispatching, so the rest of the batch waits
+                // for capacity rather than for its turn in the queue.
+                recordDeferral(candidate, ReasonCodes.CAPACITY_LIMIT,
+                        "concurrency limit dropped to " + currentLimit + " while this round was dispatching", now);
                 return;
             }
             // Retries are admitted at a limited rate so a wave of failing tasks cannot take every
@@ -247,11 +284,16 @@ public class TaskWorkerEngine implements SmartLifecycle {
             if (candidate.getStatus() == TaskStatus.RETRY_WAIT && !retryAdmission.tryAcquire()) {
                 log.info("worker {} did not dispatch retry of task {}: retry admission limit of {}/s reached",
                         workerId, candidate.getId(), retryAdmission.maxPerSecond());
+                recordDeferral(candidate, ReasonCodes.PRIORITY_WAIT,
+                        "retry admission limit of " + retryAdmission.maxPerSecond() + "/s reached", now);
                 continue;
             }
             if (typeLimitReached(candidate.getTaskType())) {
                 log.info("worker {} did not dispatch task {}: task type '{}' is at its concurrency limit of {}",
                         workerId, candidate.getId(), candidate.getTaskType(), properties.limitFor(candidate.getTaskType()));
+                recordDeferral(candidate, ReasonCodes.CAPACITY_LIMIT,
+                        "task type '" + candidate.getTaskType() + "' is at its concurrency limit of "
+                                + properties.limitFor(candidate.getTaskType()), now);
                 continue;
             }
             TaskClaim claim = taskOperations.claimAndOpen(candidate.getId(), workerId, now, properties.getLeaseTtl());
@@ -262,6 +304,7 @@ public class TaskWorkerEngine implements SmartLifecycle {
             long queueWaitMillis = queueWaitMillis(candidate, now);
             inFlight.incrementAndGet();
             incrementType(candidate.getTaskType());
+            dispatched++;
             try {
                 executionPool.execute(() -> executeClaim(claim, queueWaitMillis));
             } catch (RejectedExecutionException e) {
@@ -271,6 +314,42 @@ public class TaskWorkerEngine implements SmartLifecycle {
                 decrementType(candidate.getTaskType());
                 log.warn("worker {} dropped the claim of task {} while shutting down", workerId, candidate.getId());
             }
+        }
+        if (dispatched > 0 && candidates.size() >= batchLimit) {
+            // The round used its whole batch although slots stayed free, so due tasks are waiting for the
+            // next round: the queue order decided which of them ran first (PRD 5.6).
+            boolean capacityBound = available <= properties.getBatchSize();
+            recordHeadDeferral(capacityBound ? ReasonCodes.CAPACITY_LIMIT : ReasonCodes.PRIORITY_WAIT,
+                    capacityBound
+                            ? "only " + available + " of " + effectiveConcurrency + " execution slots were free in this round"
+                            : "batch size " + properties.getBatchSize() + " was filled while execution slots stayed free",
+                    now);
+        }
+    }
+
+    /**
+     * Records why one candidate was left unclaimed. Nothing happens without a recorder, which is how
+     * the legacy constructors keep working without the decision tables.
+     */
+    private void recordDeferral(Task task, String reasonCode, String cause, LocalDateTime now) {
+        if (decisionRecorder == null) {
+            return;
+        }
+        int attempt = task.getAttemptCount() == null ? 0 : task.getAttemptCount();
+        decisionRecorder.recordTaskDeferral(task.getId(), attempt, reasonCode, workerId, limit.current(), cause, now);
+    }
+
+    /**
+     * Records the task that is at the head of the waiting queue, if any: the query is ordered by
+     * priority and eligibility time, so the first candidate is the task the round would run next.
+     */
+    private void recordHeadDeferral(String reasonCode, String cause, LocalDateTime now) {
+        if (decisionRecorder == null) {
+            return;
+        }
+        List<Task> waiting = taskOperations.findClaimable(now, 1);
+        if (!waiting.isEmpty()) {
+            recordDeferral(waiting.get(0), reasonCode, cause, now);
         }
     }
 
@@ -332,7 +411,8 @@ public class TaskWorkerEngine implements SmartLifecycle {
     private void reportFailure(long taskId, long executionId, long fencingToken, int attempt, TaskFailure failure) {
         log.warn("task {} attempt {} failed: {} ({}) [category={}]",
                 taskId, attempt, failure.message(), failure.code(), failure.category());
-        boolean applied = taskOperations.fail(taskId, executionId, fencingToken, failure, LocalDateTime.now(clock));
+        boolean applied = taskOperations.fail(taskId, executionId, fencingToken, failure, workerId,
+                limit.current(), LocalDateTime.now(clock));
         if (!applied) {
             log.warn("failure of task {} attempt {} was rejected as stale", taskId, attempt);
         }

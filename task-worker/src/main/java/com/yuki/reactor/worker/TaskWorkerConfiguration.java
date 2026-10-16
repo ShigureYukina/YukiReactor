@@ -2,6 +2,7 @@ package com.yuki.reactor.worker;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yuki.reactor.core.concurrency.ConcurrencyLimit;
+import com.yuki.reactor.core.decision.SchedulerDecisionRecorder;
 import com.yuki.reactor.core.handler.TaskHandlerRegistry;
 import com.yuki.reactor.core.retry.RetryProperties;
 import com.yuki.reactor.core.service.TaskOperations;
@@ -36,8 +37,9 @@ public class TaskWorkerConfiguration {
                                             RuntimeSignals runtimeSignals,
                                             ObjectProvider<ConcurrencyLimit> concurrencyLimit,
                                             ObjectMapper objectMapper,
-                                            Clock clock) {
+                                            Clock clock,
+                                            SchedulerDecisionRecorder decisionRecorder) {
         return new TaskWorkerEngine(taskOperations, handlerRegistry, properties, retryProperties,
-                runtimeSignals, concurrencyLimit.getIfAvailable(), objectMapper, clock, null);
+                runtimeSignals, concurrencyLimit.getIfAvailable(), objectMapper, clock, null, decisionRecorder);
     }
 }
