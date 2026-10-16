@@ -6,25 +6,27 @@ Reactor 关注的不是"任务能不能跑起来"，而是任务在异常条件�
 
 - 需求文档（唯一权威来源）：[`docs/PRD.md`](docs/PRD.md)
 - 开发准则与硬约束：[`AGENTS.md`](AGENTS.md)
-- 当前进度：**第一阶段（任务执行基础）已完成**
+- 当前进度：**第二阶段（并发控制与故障恢复）已完成**
+- 第二阶段故障恢复实验报告：[`docs/reports/phase-2-recovery.md`](docs/reports/phase-2-recovery.md)
 
-> 本文件在每阶段结束时更新。第一阶段的"能做什么 / 不能做什么"在文末如实列出。
+> 本文件在每阶段结束时更新。已实现与未实现的能力在下表如实列出。
 
-## 第一阶段：能做什么
+## 能力现状
 
 | 能力 | 状态 |
 |---|---|
 | REST 提交任务、持久化、状态查询 | ✅ |
 | 幂等键（数据库唯一约束）防重复创建 | ✅ |
 | 多 Worker 竞争领取（条件更新，无重复领取） | ✅ |
-| 单个 Worker 内可配置并发执行 | ✅ |
+| 可配置并发执行、按任务类型限制最大并发 | ✅ |
 | 任务优先级调度、按状态与时间范围分页查询 | ✅ |
 | 执行记录（每次尝试；领取时即落库，崩溃也留痕） | ✅ |
 | fencing token 保护：拒绝过期执行者覆盖任务状态 | ✅ |
 | 取消未开始的任务、管理员重放失败任务（强制记录 operator/reason） | ✅ |
 | 状态机校验 + 条件更新双重保护 | ✅ |
-| 执行器崩溃恢复（租约续约 / 超时回收） | ❌ 第二阶段 |
-| 失败分类、指数退避、最大重试次数 | ❌ 第二阶段 |
+| 租约心跳续约、执行超时（协作式中断） | ✅ 第二阶段 |
+| 过期租约回收与孤儿执行记录清理（执行器崩溃后恢复） | ✅ 第二阶段 |
+| 失败分类、指数退避 + 抖动、最大重试次数、重试派发限速 | ✅ 第二阶段 |
 | 自适应并发控制（AIMD） | ❌ 第三阶段 |
 | 调度决策记录、任务时间线、监控面板 | ❌ 第四阶段 |
 | 管理接口认证与鉴权 | ❌ 第五阶段 |
@@ -34,13 +36,14 @@ Reactor 关注的不是"任务能不能跑起来"，而是任务在异常条件�
 ## 架构
 
 ```
-task-core    领域模型、状态机、MyBatis 映射、任务服务与领取/上报操作（含 Flyway 迁移）
-task-api     REST 接口与异常到 HTTP 语义的映射
-task-worker  领取-执行-续约的执行引擎（SmartLifecycle），可多进程独立运行
-app          Spring Boot 装配、配置、演示任务类型
+task-core     领域模型、状态机、失败分类与重试策略、MyBatis 映射、任务服务与领取/上报操作（含 Flyway 迁移）
+task-api      REST 接口与异常到 HTTP 语义的映射
+task-worker   领取-执行-续约-上报的执行引擎（SmartLifecycle），可多进程独立运行
+task-recovery 过期租约回收与孤儿执行记录清理（定时扫描器）
+app           Spring Boot 装配、配置、演示任务类型
 ```
 
-依赖方向：`task-api`、`task-worker` 依赖 `task-core`；`task-api` 与 `task-worker` 互不依赖；`app` 只做装配。**MySQL 是唯一任务状态来源**，未引入 Redis / 消息队列。
+依赖方向：`task-api`、`task-worker`、`task-recovery` 依赖 `task-core`；三者互不依赖；`app` 只做装配。**MySQL 是唯一任务状态来源**，未引入 Redis / 消息队列。
 
 ## 快速开始
 
@@ -79,7 +82,7 @@ curl.exe -s http://localhost:8080/api/v1/tasks/1/executions
 | POST | `/api/v1/tasks` | 提交任务。新建返回 `201`，命中幂等键返回 `200`（`idempotentReplay=true`） |
 | GET | `/api/v1/tasks/{id}` | 任务详情（状态、执行次数、最近错误、下次允许执行时间） |
 | GET | `/api/v1/tasks` | 分页查询：`status`、`from`/`to`（ISO-8601，按创建时间）、`page`（从 0 开始）、`size`（1–200，默认 20） |
-| GET | `/api/v1/tasks/{id}/executions` | 执行历史（每次尝试的开始/结束时间、执行器、结果、错误码） |
+| GET | `/api/v1/tasks/{id}/executions` | 执行历史（每次尝试的开始/结束时间、执行器、结果、错误码与错误分类、所属 fencing token） |
 | POST | `/api/v1/tasks/{id}/cancel` | 取消尚未开始的任务，body：`{"operator": "...", "reason": "..."}` |
 | POST | `/api/v1/tasks/{id}/replay` | 管理员重放失败任务，body 同上 |
 
@@ -107,16 +110,39 @@ curl.exe -s http://localhost:8080/api/v1/tasks/1/executions
 
 ```
 PENDING → RUNNING → SUCCEEDED
-   │         ├─────→ RETRY_WAIT → RUNNING   （第二阶段启用）
+   │         ├─────→ RETRY_WAIT → RUNNING   （到达下次执行时间后重新领取）
    │         └─────→ FAILED → PENDING       （仅管理员重放）
    └─────→ CANCELLED                        （仅限尚未开始的任务）
 ```
 
 - 所有状态变更**先经状态机校验，再执行带条件的 SQL 更新**（`WHERE status = ... AND fencing_token = ...`）。
-- 领取任务使用条件更新，受影响行数必须为 1；多个 Worker 竞争同一任务时只有一方成功。
+- 领取任务使用条件更新（`PENDING` 或已到期的 `RETRY_WAIT`），受影响行数必须为 1；多个 Worker 竞争同一任务时只有一方成功。
 - 结果上报必须匹配当前 `fencing_token`，旧执行者/迟到写入被拒绝并记为 `ABANDONED` + `STALE_WRITER`，**不会覆盖已确认的状态**。
 - 执行器失联不会被推导为成功：只有执行者提交成功结果才会进入 `SUCCEEDED`。
-- 本轮**不校验**执行中取消：`RUNNING → CANCELLED` 不是合法转换，对执行中任务的取消请求会被拒绝。
+- **租约**：领取时写入 `lease_owner` + `lease_until`，执行期间按 `lease-renew-interval` 心跳续约；续约失败（已失去所有权）会中断本地执行并丢弃结果。
+- **回收**：`task-recovery` 扫描 `status='RUNNING' AND lease_until <= now` 的任务，在确认状态与 `fencing_token` 未变、租约确实过期后才回收为 `RETRY_WAIT`（尝试次数用尽则为 `FAILED`），并把崩溃者遗留的执行记录关闭为 `ABANDONED` + `LEASE_EXPIRED`。
+- **超时**：`timeoutMs` 通过中断执行线程实现（协作式）。响应中断的处理器记为 `TIMEOUT` 并按策略重试；不响应中断的处理器会继续运行，其迟到结果被上述守卫拒绝。
+- 「执行中取消」只表示请求取消：`RUNNING → CANCELLED` 不是合法自动转换，对执行中任务的取消请求会被拒绝。
+
+## 失败分类与重试
+
+失败的处理方式由错误分类决定（PRD §5.4）：
+
+| 触发方式 | 错误分类 | 是否重试 |
+|---|---|---|
+| `InvalidTaskParameterException` | `INVALID_PARAMETER` | 否，直接 `FAILED` |
+| `PermanentTaskException` | `BUSINESS_REJECTION` | 否，直接 `FAILED` |
+| `TransientTaskException` | `TRANSIENT` | 是 |
+| `ThrottledTaskException`（带 `retryAfter`） | `THROTTLED` | 是，且等待时间不小于下游给出的 `retryAfter` |
+| `OverloadedTaskException` | `OVERLOADED` | 是 |
+| 执行超时（引擎判定） | `TIMEOUT` | 是 |
+| 租约过期回收（引擎判定） | `EXECUTOR_LOST` | 是（尝试次数用尽则 `FAILED`） |
+| 其他未分类异常 | `UNKNOWN` | **是**（受 `maxAttempts` 上限约束，默认按此处理） |
+
+- 退避 = `base-delay × multiplier^(已失败次数−1)`，上限 `max-delay`，再叠加 ±`jitter` 比例的抖动。
+- `attempt_count >= maxAttempts` 时不再重试，任务进入 `FAILED`，执行记录的原因码为 `MAX_RETRIES_EXCEEDED`。
+- `RETRY_WAIT` 的派发受 `reactor.retry.max-dispatches-per-second` 限速，避免重试任务挤占正常任务的执行资源。
+- `task.last_error` 的前缀取「最具体的事实」：有具体原因码（如 `MAX_RETRIES_EXCEEDED`、`LEASE_EXPIRED`）时用原因码，只有通用的 `EXECUTION_ERROR`（即 handler 抛异常）时才用错误分类。
 
 ## 新增任务类型
 
@@ -135,12 +161,17 @@ public class ReportTaskHandler implements TaskHandler {
     public void execute(TaskContext context) throws Exception {
         JsonNode payload = context.payload();
         // context: taskId / attempt / taskType / payload
-        // 失败直接抛异常，由执行引擎记录为 EXECUTION_ERROR
+        // 失败时按可重试性抛出对应异常（都在 com.yuki.reactor.core.error 下）：
+        //   throw new TransientTaskException("downstream timeout");                       // 可重试
+        //   throw new ThrottledTaskException("rate limited", Duration.ofSeconds(30));      // 可重试，且遵守下游的等待指示
+        //   throw new PermanentTaskException("order already archived");                    // 不可重试
+        //   throw new InvalidTaskParameterException("amount must be positive");            // 不可重试
+        // 其他异常视为未分类（UNKNOWN），按可重试处理，仍受 maxAttempts 上限约束
     }
 }
 ```
 
-内置演示任务类型 `echo`：`{"sleepMs": 200}` 睡眠指定毫秒；`{"fail": true}` 抛出异常用于演示失败终态。它只用于验证引擎行为，第三阶段的 `fault-lab` 会提供真正可控的故障注入。
+内置演示任务类型 `echo`：`{"sleepMs": 200}` 睡眠指定毫秒；`{"fail": true}` 抛出未分类异常，用于演示「重试到上限后进入 `FAILED`」。它只用于验证引擎行为，第三阶段的 `fault-lab` 会提供真正可控的故障注入。
 
 ## 配置
 
@@ -151,11 +182,26 @@ public class ReportTaskHandler implements TaskHandler {
 | `reactor.worker.concurrency` | `4` | 单个 Worker 的最大并发执行数 |
 | `reactor.worker.poll-interval` | `500ms` | 领取轮询间隔 |
 | `reactor.worker.batch-size` | `10` | 每次轮询最多尝试领取的任务数 |
-| `reactor.worker.lease-ttl` | `60s` | 领取时写入的租约时长 |
+| `reactor.worker.lease-ttl` | `60s` | 领取时写入的租约时长（同时决定崩溃恢复延时的上界） |
+| `reactor.worker.lease-renew-interval` | `lease-ttl / 3` | 心跳续约周期，必须小于 `lease-ttl` |
+| `reactor.worker.task-type-limits.<type>` | 不限制 | 按任务类型的最大并发执行数，例如 `task-type-limits.echo: 1` |
+
+| 配置项 | 默认值 | 说明 |
+|---|---|---|
+| `reactor.retry.base-delay` | `1s` | 首次重试的退避基准 |
+| `reactor.retry.multiplier` | `2.0` | 退避倍数 |
+| `reactor.retry.max-delay` | `5m` | 退避上限（下游 `retryAfter` 指示不受此上限约束） |
+| `reactor.retry.jitter` | `0.2` | 抖动比例（0–1），用于打散同时重试的任务 |
+| `reactor.retry.max-dispatches-per-second` | `20` | 每秒最多派发多少个重试任务；`0` 表示不限速 |
+
+| 配置项 | 默认值 | 说明 |
+|---|---|---|
+| `reactor.recovery.enabled` | `true` | 是否启动过期租约恢复扫描器 |
+| `reactor.recovery.scan-interval` | `5s` | 扫描周期，与 `lease-ttl` 共同决定恢复延时 |
+| `reactor.recovery.batch-size` | `50` | 每轮最多处理的过期租约数与孤儿执行记录数 |
+| `reactor.recovery.orphan-sweep-enabled` | `true` | 是否清理「任务已不在执行中却仍开放」的执行记录 |
 
 数据库连接可用环境变量覆盖：`MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_DATABASE`、`MYSQL_USER`、`MYSQL_PASSWORD`。时间统一使用 UTC，通过注入的 `Clock` 获取。
-
-> 说明：`lease-ttl` 已经写入数据库，但第一阶段的引擎**不做续约与过期回收**，因此它目前只用于标识"当前持有者"。超时回收属于第二阶段。
 
 ## 测试
 
@@ -164,9 +210,21 @@ $env:JAVA_HOME="$env:USERPROFILE\.jdks\jdk-21.0.12.1+1"
 .\mvnw.cmd -B verify
 ```
 
-- 单元测试（`task-core`，不需要 Docker）：状态机全部合法/非法转换、任务类型注册表。
-- 集成测试（`app`，**Testcontainers + MySQL 8，不使用 H2**）：执行成功/失败流程、16 线程并发幂等提交、4 个竞争者的"恰好领取一次"、过期 fencing token 被拒、取消与重放语义、REST 契约。
-- 集成测试需要 Docker 可用。
+- 单元测试（`task-core`，不需要 Docker）：状态机全部合法/非法转换、任务类型注册表、退避计算（含抖动边界与上限）、重试派发限速器、失败分类。
+- 集成测试（`app`，**Testcontainers + MySQL 8，不使用 H2**）：执行成功/失败流程、16 线程并发幂等提交、多引擎竞争的"恰好领取一次"、过期 fencing token 被拒、取消与重放、REST 契约、心跳续约阻止误回收、过期租约回收后由其它实例完成、孤儿执行记录清理、退避窗口内不派发、下游 `retryAfter` 指示优先、不可重试错误立即失败、尝试次数用尽后停止重试、超时中断、按类型并发上限、重试派发限速，以及「副作用已产生但成功状态未写入」故障窗口的专项验证。
+- 集成测试需要 Docker 可用。当前规模：**task-core 33 个单元测试 + app 50 个集成测试**。
+
+## 故障实验
+
+本机可复现的强制终止执行器实验（真实多进程，非模拟）：
+
+```powershell
+docker compose up -d mysql
+pwsh -NoProfile -File scripts/phase-2-recovery-experiment.ps1              # 先构建再运行
+pwsh -NoProfile -File scripts/phase-2-recovery-experiment.ps1 -SkipBuild   # 复用已构建的 jar
+```
+
+脚本会启动两个实例（8080/8081）、跑一轮多 Worker 竞争（校验无重复领取）、再对持有长任务租约的实例执行 `Stop-Process -Force`，最后把环境、配置、注入方式、校验结果、测量值与执行记录写入 `docs/reports/phase-2/<UTC 时间戳>/raw-result.json`，实例日志同目录保存。实测结果与局限见 [`docs/reports/phase-2-recovery.md`](docs/reports/phase-2-recovery.md)。
 
 ### 访问 Docker Hub
 
