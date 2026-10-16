@@ -278,4 +278,23 @@ public interface TaskMapper extends BaseMapper<Task> {
                                  @Param("fencingToken") long fencingToken,
                                  @Param("error") String error,
                                  @Param("now") LocalDateTime now);
+
+    /**
+     * Tasks that are being executed somewhere right now. Counted across all workers, so it is the
+     * real load of the system and not the load of one process.
+     */
+    @Select("SELECT COUNT(*) FROM task WHERE status = 'RUNNING'")
+    long countRunning();
+
+    /**
+     * Tasks that are ready to run but have not been claimed yet: the backlog the scheduler is
+     * currently not able to absorb (PRD 5.5).
+     */
+    @Select("""
+            SELECT COUNT(*)
+              FROM task
+             WHERE status IN ('PENDING', 'RETRY_WAIT')
+               AND next_run_at <= #{now}
+            """)
+    long countDueBacklog(@Param("now") LocalDateTime now);
 }
