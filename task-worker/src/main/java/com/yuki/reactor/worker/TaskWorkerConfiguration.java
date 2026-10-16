@@ -2,6 +2,7 @@ package com.yuki.reactor.worker;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yuki.reactor.core.handler.TaskHandlerRegistry;
+import com.yuki.reactor.core.retry.RetryProperties;
 import com.yuki.reactor.core.service.TaskOperations;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -25,8 +26,9 @@ public class TaskWorkerConfiguration {
     public TaskWorkerEngine taskWorkerEngine(TaskOperations taskOperations,
                                             TaskHandlerRegistry handlerRegistry,
                                             TaskWorkerProperties properties,
+                                            RetryProperties retryProperties,
                                             ObjectMapper objectMapper,
                                             Clock clock) {
-        return new TaskWorkerEngine(taskOperations, handlerRegistry, properties, objectMapper, clock);
+        return new TaskWorkerEngine(taskOperations, handlerRegistry, properties, retryProperties, objectMapper, clock);
     }
 }
