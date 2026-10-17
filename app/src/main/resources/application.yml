@@ -92,7 +92,8 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,metrics,info
+        # prometheus is scraped by the monitoring stack (deploy/, PRD 6.1: Micrometer/Prometheus + Grafana).
+        include: health,metrics,info,prometheus
 
 logging:
   level:
