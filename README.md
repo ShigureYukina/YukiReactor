@@ -403,3 +403,4 @@ docker tag  docker.m.daocloud.io/library/mysql:8.4 mysql:8.4
 - [`docs/reports/phase-3-adaptive-control.md`](docs/reports/phase-3-adaptive-control.md)：第三阶段自适应并发控制实验报告
 - [`docs/reports/phase-4-comparison-experiment.md`](docs/reports/phase-4-comparison-experiment.md)：第四阶段固定并发与自适应并发对照实验报告
 - [`docs/reports/phase-5-engineering.md`](docs/reports/phase-5-engineering.md)：第五阶段工程完善报告（认证与权限、部署、异常测试、演示与局限）
+- [`docs/reports/v1.1-engineering/h1-retry-admission.md`](docs/reports/v1.1-engineering/h1-retry-admission.md)：V1.1 反证实验 H1——重试派发限速是否保护首派任务（假设未获证实的负面结果、口径伪影甄别与场景缺陷记录）
