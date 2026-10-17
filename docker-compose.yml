@@ -48,5 +48,40 @@ services:
       retries: 12
       start_period: 30s
 
+  # Observability stack (PRD 6.1: Micrometer/Prometheus + Grafana). It hangs behind the
+  # `monitoring` profile so the default `docker compose up` (mysql + app) stays unchanged:
+  #   docker compose --profile monitoring up -d
+  # Grafana: http://localhost:3000 (anonymous read-only viewer), dashboards auto-provisioned
+  # from deploy/grafana/dashboards. Prometheus: http://localhost:9090
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: reactor-prometheus
+    profiles: ["monitoring"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: reactor-grafana
+    profiles: ["monitoring"]
+    depends_on:
+      - prometheus
+    environment:
+      # Anonymous read-only viewer keeps the local demo friction-free; anything beyond this
+      # machine must set its own credentials instead.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+
 volumes:
   mysql-data:

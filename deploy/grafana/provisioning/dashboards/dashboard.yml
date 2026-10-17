@@ -1,0 +1,14 @@
+apiVersion: 1
+
+providers:
+  - name: Reactor
+    orgId: 1
+    folder: Reactor
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      # JSON files mounted from deploy/grafana/dashboards (see docker-compose.yml).
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

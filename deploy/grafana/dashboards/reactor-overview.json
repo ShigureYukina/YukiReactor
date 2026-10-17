@@ -1,0 +1,382 @@
+{
+  "title": "Reactor Overview",
+  "uid": "reactor-overview",
+  "tags": ["reactor"],
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "time": { "from": "now-15m", "to": "now" },
+  "refresh": "10s",
+  "timepicker": {},
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "type": "row",
+      "title": "自适应并发控制（需 reactor.adaptive.enabled=true，关闭时无数据）",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100
+    },
+    {
+      "type": "stat",
+      "title": "当前并发度 (reactor.adaptive.concurrency.limit)",
+      "description": "引擎外部的共享状态（ConcurrencyLimit）：worker 每轮轮询读取，调低只影响下一次派发。",
+      "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 1 },
+      "id": 1,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "justifyMode": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+          "expr": "reactor_adaptive_concurrency_limit",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "并发上限 (reactor.adaptive.concurrency.max)",
+      "description": "线程池按上限分配，实际派发受当前并发度限制。",
+      "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 1 },
+      "id": 2,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "blue", "value": null }]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "justifyMode": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+          "expr": "reactor_adaptive_concurrency_max",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "并发调整频率（按原因码）",
+      "description": "每次真实调整递增一次计数器；无调整时应为空（空窗口按未知处理，不写决策）。",
+      "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "id": 3,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "axisPlacement": "auto",
+            "stacking": { "mode": "normal" }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["sum"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+          "expr": "sum by (reason) (rate(reactor_adaptive_concurrency_adjustments_total[5m]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "模拟下游（fault-lab，downstream 任务类型调用）",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "id": 101
+    },
+    {
+      "type": "stat",
+      "title": "下游失败率（5m 窗口）",
+      "description": "失败调用数 / 总调用数；无调用时显示为空（分母钳制避免除零，不是真实 0%）。",
+      "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 10 },
+      "id": 4,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.1 },
+              { "color": "red", "value": 0.3 }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "justifyMode": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+          "expr": "sum(rate(reactor_faultlab_downstream_latency_seconds_count{outcome=\"failure\"}[5m])) / clamp_min(sum(rate(reactor_faultlab_downstream_latency_seconds_count[5m])), 0.001)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "下游调用量（按结果）",
+      "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+      "gridPos": { "h": 8, "w": 9, "x": 6, "y": 10 },
+      "id": 5,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "axisPlacement": "auto",
+            "stacking": { "mode": "normal" }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+          "expr": "sum by (outcome) (rate(reactor_faultlab_downstream_latency_seconds_count[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "下游平均延迟（按结果）",
+      "description": "count/sum 估算的平均耗时；与 scheduler_decision 的下游延迟指标同源。",
+      "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+      "gridPos": { "h": 8, "w": 9, "x": 15, "y": 10 },
+      "id": 6,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "axisPlacement": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+          "expr": "sum by (outcome) (rate(reactor_faultlab_downstream_latency_seconds_sum[5m])) / sum by (outcome) (rate(reactor_faultlab_downstream_latency_seconds_count[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "运行时（HTTP / JVM / 连接池）",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "id": 102
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP 请求量（按 URI）",
+      "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 19 },
+      "id": 7,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "axisPlacement": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+          "expr": "sum by (uri) (rate(http_server_requests_seconds_count[5m]))",
+          "legendFormat": "{{uri}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "JVM 堆内存（已用）",
+      "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 19 },
+      "id": 8,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "axisPlacement": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+          "expr": "sum(jvm_memory_used_bytes{area=\"heap\"})",
+          "legendFormat": "heap used",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Hikari 活动连接",
+      "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 19 },
+      "id": 9,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "axisPlacement": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true, "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+          "expr": "sum by (pool) (hikaricp_connections_active)",
+          "legendFormat": "{{pool}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "实例存活 (up)",
+      "description": "每个 scrape 目标一行；0 表示该目标当前不可达。",
+      "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 27 },
+      "id": 10,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red", "index": 0 }, "1": { "text": "UP", "color": "green", "index": 1 } } }
+          ],
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "instance" },
+            "properties": [{ "id": "displayName", "value": "实例" }]
+          }
+        ]
+      },
+      "options": {
+        "graphMode": "none",
+        "colorMode": "background",
+        "justifyMode": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "reactor-prometheus" },
+          "expr": "up",
+          "instant": true,
+          "legendFormat": "{{job}} / {{instance}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

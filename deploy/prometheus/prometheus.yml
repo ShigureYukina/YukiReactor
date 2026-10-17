@@ -1,0 +1,20 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # The application started by `docker compose --profile monitoring up` (same compose network).
+  - job_name: reactor-app-compose
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["app:8080"]
+        labels:
+          run_mode: compose
+  # An engine started outside compose (mvnw spring-boot:run, the phase 3/4 experiment scripts,
+  # scripts/demo.ps1) on the Docker host.
+  - job_name: reactor-app-host
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["host.docker.internal:8080"]
+        labels:
+          run_mode: host

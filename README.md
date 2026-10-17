@@ -111,6 +111,22 @@ curl.exe -s -u admin:reactor-dev -X POST http://localhost:8080/api/v1/tasks/1/ca
 
 清理：`docker compose rm -sf app` 只移除应用容器；`docker compose down` 移除全部容器但保留数据卷（加 `-v` 才删数据）。
 
+## 可观测面板（Prometheus + Grafana）
+
+PRD §6.1 技术选型中的「Micrometer/Prometheus + Grafana」可视化部分。应用通过 `/actuator/prometheus` 暴露指标，监控栈挂在 `monitoring` profile 下，不影响默认 `docker compose up`：
+
+```powershell
+docker compose --profile monitoring up -d
+```
+
+- **Grafana**：<http://localhost:3000>（匿名只读 Viewer），`deploy/grafana/dashboards/reactor-overview.json` 自动预置为 Reactor 文件夹下的「Reactor Overview」面板。
+- **Prometheus**：<http://localhost:9090>，抓取配置 `deploy/prometheus/prometheus.yml`（5s 间隔），两个 job：
+  - `reactor-app-compose`：抓 `app:8080`，覆盖 compose 内启动的应用；
+  - `reactor-app-host`：抓 `host.docker.internal:8080`，覆盖本机直跑的实例（`mvnw spring-boot:run`、`scripts/demo.ps1`、阶段三/四实验脚本）。两个 job 至少一个 UP；同时运行时会重复抓同一实例，`up` 面板出现两行属预期。
+- 面板三行：**自适应并发控制**（`reactor_adaptive_concurrency_limit` / `_max` / 调整频率，需 `reactor.adaptive.enabled=true`，关闭时该行为空）、**模拟下游**（调用量、失败率、平均延迟，来自 `reactor_faultlab_downstream_latency_seconds_*`）、**运行时**（HTTP 请求量、JVM 堆、Hikari 活动连接、`up`）。指标口径与调度决策记录同源，但面板是过程视图，审计仍以 `scheduler_decision` 表为准。
+
+与「指标」REST 接口（窗口快照）的分工：REST 接口给出固定窗口的数值结论，Grafana 给出时间序列过程；两者都不替代 `scheduler_decision` 的决策解释。
+
 ## REST API
 
 所有路径以 `/api/v1` 开头，错误响应统一为 `{"code": "...", "message": "..."}`。
