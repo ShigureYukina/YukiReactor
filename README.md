@@ -397,7 +397,7 @@ docker tag  docker.m.daocloud.io/library/mysql:8.4 mysql:8.4
 
 ## 文档
 
-- `docs/PRD.md`：产品需求与验收标准（V1.3）
+- `docs/PRD.md`：产品需求与验收标准（V1.6）
 - `AGENTS.md`：开发纪律、模块边界、测试要求与本机环境
 - [`docs/reports/phase-2-recovery.md`](docs/reports/phase-2-recovery.md)：第二阶段故障恢复实验报告
 - [`docs/reports/phase-3-adaptive-control.md`](docs/reports/phase-3-adaptive-control.md)：第三阶段自适应并发控制实验报告
@@ -405,3 +405,4 @@ docker tag  docker.m.daocloud.io/library/mysql:8.4 mysql:8.4
 - [`docs/reports/phase-5-engineering.md`](docs/reports/phase-5-engineering.md)：第五阶段工程完善报告（认证与权限、部署、异常测试、演示与局限）
 - [`docs/reports/v1.1-engineering/h1-retry-admission.md`](docs/reports/v1.1-engineering/h1-retry-admission.md)：V1.1 反证实验 H1——重试派发限速是否保护首派任务（假设未获证实的负面结果、口径伪影甄别与场景缺陷记录）
 - [`docs/reports/v1.1-engineering/h2-recovery-observation.md`](docs/reports/v1.1-engineering/h2-recovery-observation.md)：V1.1 反证实验 H2——恢复观察窗是否为恢复延迟的主导因素（部分推翻：爬坡节律 = max(观察窗, cooldown)，主导闸门是计数信号窗的冲洗前缀）
+- [`docs/reports/v1.1-engineering/h3-lease-ttl.md`](docs/reports/v1.1-engineering/h3-lease-ttl.md)：V1.1 反证实验 H3——租约 TTL 是否为崩溃恢复时长的主导因素（证实：击杀→回收 ≈ TTL，4.5/17.9/59.7s，秒级 TTL 对健康执行器零误回收）
