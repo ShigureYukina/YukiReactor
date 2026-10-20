@@ -18,3 +18,8 @@ Thumbs.db
 ### Logs & runtime
 *.log
 logs/
+
+### 文档与实验脚本：仅在本地保留，不入库（仓库只存可运行代码）
+/docs/
+/scripts/
+/AGENTS.md
