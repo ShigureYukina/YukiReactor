@@ -2,6 +2,7 @@ package com.yuki.reactor.core.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yuki.reactor.common.web.PageLimits;
 import com.yuki.reactor.core.domain.Task;
 import com.yuki.reactor.core.domain.TaskStatus;
 import com.yuki.reactor.core.dto.TaskExecutionView;
@@ -46,7 +47,6 @@ public class TaskService {
     private static final int MAX_TASK_TYPE_LENGTH = 64;
     private static final int MAX_SCOPE_LENGTH = 64;
     private static final int MAX_KEY_LENGTH = 128;
-    private static final int MAX_PAGE_SIZE = 200;
 
     private final TaskMapper taskMapper;
     private final TaskExecutionMapper executionMapper;
@@ -126,8 +126,8 @@ public class TaskService {
         if (query.page() < 0) {
             throw new IllegalArgumentException("page must be greater than or equal to 0");
         }
-        if (query.size() < 1 || query.size() > MAX_PAGE_SIZE) {
-            throw new IllegalArgumentException("size must be between 1 and " + MAX_PAGE_SIZE);
+        if (query.size() < 1 || query.size() > PageLimits.MAX_PAGE_SIZE) {
+            throw new IllegalArgumentException("size must be between 1 and " + PageLimits.MAX_PAGE_SIZE);
         }
         if (query.from() != null && query.to() != null && !query.from().isBefore(query.to())) {
             throw new IllegalArgumentException("from must be before to");

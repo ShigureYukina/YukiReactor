@@ -2,7 +2,7 @@ package com.yuki.reactor.observability.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.yuki.reactor.observability.ObservabilityLimits;
+import com.yuki.reactor.common.web.PageLimits;
 import com.yuki.reactor.observability.domain.ExperimentRun;
 import com.yuki.reactor.observability.domain.ExperimentStrategy;
 import com.yuki.reactor.observability.dto.ExperimentRunPage;

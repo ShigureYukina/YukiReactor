@@ -43,6 +43,7 @@ Reactor 关注的不是"任务能不能跑起来"，而是任务在异常条件�
 ## 架构
 
 ```
+reactor-common 跨模块共享契约：统一错误体 `ApiError` 与分页边界 `PageLimits`（无内部依赖）
 task-core     领域模型、状态机、失败分类与重试策略、MyBatis 映射、任务服务与领取/上报操作、共享并发度与运行时信号（含 Flyway 迁移）
 task-api      REST 接口与异常到 HTTP 语义的映射
 task-worker   领取-执行-续约-上报的执行引擎（SmartLifecycle），可多进程独立运行
@@ -53,7 +54,7 @@ observability 任务时间线、决策查询、指标聚合、实验记录（含
 app           Spring Boot 装配、配置、演示任务类型
 ```
 
-依赖方向：`task-api`、`task-worker`、`task-recovery`、`fault-lab`、`adaptive-controller`、`observability` 依赖 `task-core`，业务模块之间互不依赖；`app` 只做装配。worker 与自适应控制器不直接依赖：控制器写、worker 读同一个共享并发度（`ConcurrencyLimit`），观测信号经 `RuntimeSignals` 传递。决策记录的**写入**由 `task-core` 的 `SchedulerDecisionRecorder` 与 `adaptive-controller` 的 `ConcurrencyDecisionRecorder` 在真实决策代码路径完成，`observability` 只负责**读取**：决策分页查询、任务时间线、指标聚合与 `experiment_run` 记录读取所需的 SQL 放在 `task-core`，领域对象与服务放在 `observability`。**MySQL 是唯一任务状态来源**，未引入 Redis / 消息队列。
+依赖方向：`reactor-common` 无内部依赖，被 `task-core`、`task-api`、`observability`、`app` 依赖；`task-api`、`task-worker`、`task-recovery`、`fault-lab`、`adaptive-controller`、`observability` 依赖 `task-core`，业务模块之间互不依赖；`app` 只做装配。worker 与自适应控制器不直接依赖：控制器写、worker 读同一个共享并发度（`ConcurrencyLimit`），观测信号经 `RuntimeSignals` 传递。决策记录的**写入**由 `task-core` 的 `SchedulerDecisionRecorder` 与 `adaptive-controller` 的 `ConcurrencyDecisionRecorder` 在真实决策代码路径完成，`observability` 只负责**读取**：决策分页查询、任务时间线、指标聚合与 `experiment_run` 记录读取所需的 SQL 放在 `task-core`，领域对象与服务放在 `observability`。**MySQL 是唯一任务状态来源**，未引入 Redis / 消息队列。
 
 ## 快速开始
 

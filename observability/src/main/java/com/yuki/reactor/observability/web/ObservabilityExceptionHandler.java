@@ -1,5 +1,6 @@
 package com.yuki.reactor.observability.web;
 
+import com.yuki.reactor.common.web.ApiError;
 import com.yuki.reactor.observability.exception.DuplicateExperimentRoundException;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
@@ -21,8 +22,8 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 public class ObservabilityExceptionHandler {
 
     @ExceptionHandler(DuplicateExperimentRoundException.class)
-    public ResponseEntity<ObservabilityError> handleDuplicateRound(DuplicateExperimentRoundException e) {
+    public ResponseEntity<ApiError> handleDuplicateRound(DuplicateExperimentRoundException e) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(new ObservabilityError("DUPLICATE_EXPERIMENT_ROUND", e.getMessage()));
+                .body(new ApiError("DUPLICATE_EXPERIMENT_ROUND", e.getMessage()));
     }
 }

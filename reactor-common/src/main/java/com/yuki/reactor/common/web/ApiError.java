@@ -1,4 +1,4 @@
-package com.yuki.reactor.api.dto;
+package com.yuki.reactor.common.web;
 
 /**
  * Uniform error body for every failed API call: {@code {"code": "...", "message": "..."}}.

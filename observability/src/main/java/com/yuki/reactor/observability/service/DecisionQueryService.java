@@ -2,7 +2,7 @@ package com.yuki.reactor.observability.service;
 
 import com.yuki.reactor.core.domain.SchedulerDecision;
 import com.yuki.reactor.core.mapper.SchedulerDecisionMapper;
-import com.yuki.reactor.observability.ObservabilityLimits;
+import com.yuki.reactor.common.web.PageLimits;
 import com.yuki.reactor.observability.dto.DecisionPage;
 import com.yuki.reactor.observability.dto.DecisionQuery;
 import com.yuki.reactor.observability.dto.DecisionView;
@@ -53,9 +53,9 @@ public class DecisionQueryService {
         if (page < 0) {
             throw new IllegalArgumentException("page must be greater than or equal to 0");
         }
-        if (size < 1 || size > ObservabilityLimits.MAX_PAGE_SIZE) {
+        if (size < 1 || size > PageLimits.MAX_PAGE_SIZE) {
             throw new IllegalArgumentException(
-                    "size must be between 1 and " + ObservabilityLimits.MAX_PAGE_SIZE);
+                    "size must be between 1 and " + PageLimits.MAX_PAGE_SIZE);
         }
     }
 

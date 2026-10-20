@@ -1,7 +1,7 @@
 package com.yuki.reactor.app.security;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.yuki.reactor.api.dto.ApiError;
+import com.yuki.reactor.common.web.ApiError;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;

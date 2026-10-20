@@ -17,6 +17,10 @@
     <dependencies>
         <dependency>
             <groupId>com.yuki</groupId>
+            <artifactId>reactor-common</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.yuki</groupId>
             <artifactId>reactor-task-core</artifactId>
         </dependency>
         <dependency>

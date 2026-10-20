@@ -1,6 +1,6 @@
 package com.yuki.reactor.api.web;
 
-import com.yuki.reactor.api.dto.ApiError;
+import com.yuki.reactor.common.web.ApiError;
 import com.yuki.reactor.core.exception.InvalidTaskStateException;
 import com.yuki.reactor.core.exception.TaskNotFoundException;
 import com.yuki.reactor.core.exception.UnknownTaskTypeException;

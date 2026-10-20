@@ -19,6 +19,7 @@
     <description>Persistent asynchronous task execution engine with lease recovery and adaptive concurrency control</description>
 
     <modules>
+        <module>reactor-common</module>
         <module>task-core</module>
         <module>task-api</module>
         <module>task-worker</module>
@@ -40,6 +41,11 @@
                 <groupId>com.baomidou</groupId>
                 <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
                 <version>${mybatis-plus.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.yuki</groupId>
+                <artifactId>reactor-common</artifactId>
+                <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.yuki</groupId>

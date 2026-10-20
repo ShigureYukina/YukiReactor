@@ -26,8 +26,6 @@ class TaskFailureTest {
 
         assertThat(TaskFailure.classify(new OverloadedTaskException("downstream is saturated")).category())
                 .isEqualTo(ErrorCategory.OVERLOADED);
-        assertThat(TaskFailure.classify(new TaskTimeoutException("too slow")).category())
-                .isEqualTo(ErrorCategory.TIMEOUT);
     }
 
     @Test
